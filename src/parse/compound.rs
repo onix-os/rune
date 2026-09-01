@@ -41,13 +41,21 @@ impl Parser<'_> {
     }
 
     /// Report a construct that was opened and never closed.
-    fn unclosed(&mut self, opener: &str, opened_at: u32, expected: &[SyntaxKind]) {
-        let at = self.position();
-        self.push_error(
-            Error::new(Span::empty(at), format!("this `{opener}` was never closed"))
-                .expecting(expected.iter().copied())
-                .opened_at(Span::new(opened_at, opened_at + opener.len() as u32)),
-        );
+    ///
+    /// **Pointed at the opener.** The parser notices at the end of the body, which for an unclosed
+    /// block is the end of the file — and an error there says only that the script ran out, which
+    /// the reader can already see. The `if` that is still open is the thing to go and look at, so
+    /// that is what the span names.
+    pub(super) fn unclosed(&mut self, opener: &str, opened_at: u32, expected: &[SyntaxKind]) {
+        let span = Span::new(opened_at, opened_at + opener.len() as u32);
+        let mut error = Error::new(span, format!("this `{opener}` was never closed"))
+            .expecting(expected.iter().copied())
+            .opened_at(span);
+        // Ran out of input rather than met something it could not use: another line finishes it.
+        if self.at_end() {
+            error = error.unfinished();
+        }
+        self.push_error(error);
     }
 
     /// Take a reserved word, or report that it is missing without consuming anything.

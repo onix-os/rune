@@ -51,15 +51,11 @@ impl Parsed {
         if self.errors.is_empty() {
             return Completeness::Complete;
         }
-        let end = self.tree.source().len();
-        let ran_out = self
-            .errors
-            .iter()
-            .all(|error| error.opened_at.is_some() && error.span.start >= end);
-        if ran_out {
-            Completeness::Unfinished
-        } else {
-            Completeness::Invalid
+        // Every error has to be one another line would finish. One that would not — a `done` with
+        // no `do` — makes the whole thing wrong however much more is typed.
+        match self.errors.iter().all(|error| error.unfinished) {
+            true => Completeness::Unfinished,
+            false => Completeness::Invalid,
         }
     }
 }
@@ -133,7 +129,6 @@ impl<'a> Parser<'a> {
     /// file — so it can only be reported from here. The others usually have been, which is why
     /// this checks before speaking twice about one mistake.
     fn report_unclosed(&mut self) {
-        let end = self.starts.last().copied().unwrap_or_default();
         for open in std::mem::take(&mut self.unclosed) {
             let already = self
                 .errors
@@ -145,10 +140,13 @@ impl<'a> Parser<'a> {
             let width = open.opener.len() as u32;
             self.errors.push(
                 Error::new(
-                    Span::empty(end),
+                    Span::new(open.at, open.at + width),
                     format!("this `{}` was never closed", open.opener),
                 )
-                .opened_at(Span::new(open.at, open.at + width)),
+                .opened_at(Span::new(open.at, open.at + width))
+                // The reader ran to the end of the input looking for the closer, so another line
+                // is exactly what would finish it.
+                .unfinished(),
             );
         }
         self.errors.sort_by_key(|error| error.span.start);

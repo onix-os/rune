@@ -353,6 +353,53 @@ fn a_compound_command_takes_its_trailing_redirections() {
     }
 }
 
+/// An unclosed construct is reported *at the construct*, not at the end of the file.
+///
+/// The parser finds out at the end, because that is where it runs out of input looking for the
+/// closer — but "the script ended" is the one thing the reader can already see. The `if` on line 2
+/// is what they have to go and look at.
+#[test]
+fn an_unclosed_construct_is_reported_where_it_opened() {
+    let source = "#!/bin/sh\nif [ -f x ]; then\n  echo found\n\nfor f in *; do\n  echo \"$f\"\n\necho 'unterminated\n\necho done\n";
+    let parsed = parse(source);
+    let at = |error: &crate::error::Error| parsed.tree().source().line_col(error.span.start);
+
+    let found: Vec<_> = parsed
+        .errors()
+        .iter()
+        .map(|error| (at(error).0, error.message.as_str()))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (2, "this `if` was never closed"),
+            (5, "this `for` was never closed"),
+            (8, "this `'` was never closed"),
+        ],
+        "each error belongs on the line that opened it"
+    );
+
+    // And every one of them is something another line would finish.
+    assert!(parsed.errors().iter().all(|error| error.unfinished));
+}
+
+/// A mistake that no amount of further input would fix keeps `unfinished` off.
+#[test]
+fn a_stray_word_is_not_something_another_line_finishes() {
+    let parsed = parse("echo one\ndone\n");
+    assert_eq!(parsed.errors().len(), 1);
+    assert!(!parsed.errors()[0].unfinished);
+    // Reported where it is, because that is where the mistake is.
+    assert_eq!(
+        parsed
+            .tree()
+            .source()
+            .line_col(parsed.errors()[0].span.start)
+            .0,
+        2
+    );
+}
+
 #[test]
 fn a_prompt_can_tell_unfinished_from_wrong() {
     use crate::error::Completeness::{Complete, Invalid, Unfinished};

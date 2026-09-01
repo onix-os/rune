@@ -148,10 +148,10 @@ impl Parser<'_> {
         let width = operator.len() as u32;
         self.push_error(
             Error::new(
-                Span::empty(self.position()),
+                Span::new(at, at + width),
                 format!("this `{operator}` has nothing after it"),
             )
-            .opened_at(Span::new(at, at + width)),
+            .unfinished(),
         );
     }
 

@@ -6,8 +6,6 @@
 //! lowering it to something executable needs, so it gets a grammar.
 
 use super::Parser;
-use crate::error::Error;
-use crate::span::Span;
 use crate::tree::SyntaxKind;
 
 /// The tests that take one operand.
@@ -39,14 +37,7 @@ impl Parser<'_> {
         if self.at_word_exactly("]]") {
             self.bump_as(SyntaxKind::RBracketBracket);
         } else {
-            self.push_error(
-                Error::new(
-                    Span::empty(self.position()),
-                    "this `[[` was never closed".to_string(),
-                )
-                .expecting([SyntaxKind::RBracketBracket])
-                .opened_at(Span::new(opened_at, opened_at + 2)),
-            );
+            self.unclosed("[[", opened_at, &[SyntaxKind::RBracketBracket]);
         }
         self.trailing_redirects();
         self.finish_node();

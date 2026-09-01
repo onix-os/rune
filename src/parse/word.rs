@@ -6,8 +6,6 @@
 //! `ab\<newline>cd` is one word.
 
 use super::Parser;
-use crate::error::Error;
-use crate::span::Span;
 use crate::tree::SyntaxKind;
 
 impl Parser<'_> {
@@ -65,14 +63,7 @@ impl Parser<'_> {
         self.command_list_until(&[SyntaxKind::RParen]);
         self.pop_guard();
         if !self.eat(SyntaxKind::RParen) {
-            self.push_error(
-                Error::new(
-                    Span::empty(self.position()),
-                    format!("this `{opener}` was never closed"),
-                )
-                .expecting([SyntaxKind::RParen])
-                .opened_at(Span::new(opened_at, opened_at + 2)),
-            );
+            self.unclosed(opener, opened_at, &[SyntaxKind::RParen]);
         }
         self.finish_node();
     }
@@ -97,14 +88,7 @@ impl Parser<'_> {
             } else {
                 "$("
             };
-            self.push_error(
-                Error::new(
-                    Span::empty(self.position()),
-                    format!("this `{opener}` was never closed"),
-                )
-                .expecting([closer])
-                .opened_at(Span::new(opened_at, opened_at + opener.len() as u32)),
-            );
+            self.unclosed(opener, opened_at, &[closer]);
         }
         self.finish_node();
     }
@@ -118,14 +102,7 @@ impl Parser<'_> {
             self.bump_raw();
         }
         if !self.eat(SyntaxKind::RParenRParen) {
-            self.push_error(
-                Error::new(
-                    Span::empty(self.position()),
-                    "this `$((` was never closed".to_string(),
-                )
-                .expecting([SyntaxKind::RParen])
-                .opened_at(Span::new(opened_at, opened_at + 3)),
-            );
+            self.unclosed("$((", opened_at, &[SyntaxKind::RParenRParen]);
         }
         self.finish_node();
     }
@@ -143,14 +120,7 @@ impl Parser<'_> {
             }
         }
         if !self.eat(SyntaxKind::RBrace) {
-            self.push_error(
-                Error::new(
-                    Span::empty(self.position()),
-                    "this `${` was never closed".to_string(),
-                )
-                .expecting([SyntaxKind::RBrace])
-                .opened_at(Span::new(opened_at, opened_at + 2)),
-            );
+            self.unclosed("${", opened_at, &[SyntaxKind::RBrace]);
         }
         self.finish_node();
     }
