@@ -1,0 +1,504 @@
+use super::lex;
+use crate::tree::SyntaxKind;
+
+/// Every token paired with the text it covers, which is what makes a failure readable.
+fn tokens(text: &str) -> Vec<(SyntaxKind, &str)> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    for token in lex(text).tokens {
+        let end = at + token.len as usize;
+        out.push((token.kind, text.get(at..end).unwrap_or("<split>")));
+        at = end;
+    }
+    out
+}
+
+fn kinds(text: &str) -> Vec<SyntaxKind> {
+    lex(text)
+        .tokens
+        .into_iter()
+        .map(|token| token.kind)
+        .collect()
+}
+
+/// Shell that has given lexers trouble, plus the ordinary cases.
+const SCRIPTS: &[&str] = &[
+    "",
+    "\n",
+    "echo hi",
+    "echo   hi\t\n",
+    "# a comment",
+    "echo a#b",
+    "echo # a comment",
+    "a && b || c | d & e; f",
+    "a ;; b ;& c ;;& d",
+    "cmd >out 2>&1 <in >>app <>rw >|clob &>both &>>more",
+    "cat <<EOF\nbody\nEOF",
+    "cat <<EOF\nbody\n",
+    "cat <<-EOF\n\tbody\n\tEOF\n",
+    "cat <<'EOF'\n$x\nEOF\n",
+    "cat << EOF\nx\nEOF\n",
+    "cat <<A <<B\na\nA\nb\nB\n",
+    "cat <<EOF | grep x\nbody\nEOF\n",
+    "cat <<<'here string'",
+    "$'quote:\\' rest'",
+    "\"$'a'\"",
+    "'single'",
+    "'unterminated",
+    "\"double\"",
+    "\"unterminated",
+    "\"a b\tc\nd\"",
+    "\"escapes: \\$ \\` \\\" \\\\ and \\d\"",
+    "a\\ b",
+    "trailing\\",
+    "$HOME $? $$ $1 $@ $* $# $! $- $_",
+    "$",
+    "5$",
+    "${x}",
+    "${x:-default}",
+    "${x:=set} ${x:?msg} ${x:+alt}",
+    "${#x} ${!x}",
+    "${x#pre} ${x##pre} ${x%suf} ${x%%suf}",
+    "${x/a/b} ${x//a/b} ${x^^} ${x,,}",
+    "${a[0]} ${a[@]}",
+    "${x:-$(echo nested)}",
+    "$(echo hi)",
+    "$(echo $(echo deep))",
+    "`echo old`",
+    "$((1 + 2))",
+    "$(( (1 + 2) * 3 ))",
+    "$(())",
+    "~ ~/x ~user/x a~b",
+    "echo a\\\nb",
+    "\\\n",
+    "for i in 1 2 3; do echo \"$i\"; done",
+    "if [[ -f x ]]; then echo y; fi",
+    "f() { echo hi; }",
+    "case $x in a) echo a;; *) echo b;; esac",
+    "x=1 y=2 env",
+    "arr=(a b c)",
+    "echo é ü 日本語",
+    "((((((",
+    "))))))",
+    "$${}{$",
+    "\t \r\n  \t\n",
+];
+
+#[test]
+fn the_tokens_cover_the_whole_input() {
+    for script in SCRIPTS {
+        let total: usize = lex(script)
+            .tokens
+            .iter()
+            .map(|token| token.len as usize)
+            .sum();
+        assert_eq!(total, script.len(), "lengths do not add up for {script:?}");
+    }
+}
+
+#[test]
+fn no_token_is_empty() {
+    for script in SCRIPTS {
+        for token in lex(script).tokens {
+            assert_ne!(token.len, 0, "a zero-length {:?} in {script:?}", token.kind);
+        }
+    }
+}
+
+#[test]
+fn every_token_lands_on_a_character_boundary() {
+    for script in SCRIPTS {
+        let mut at = 0;
+        for token in lex(script).tokens {
+            at += token.len as usize;
+            assert!(
+                script.is_char_boundary(at),
+                "a token boundary splits a character in {script:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn words_and_the_space_between_them() {
+    assert_eq!(
+        tokens("echo hi"),
+        [
+            (SyntaxKind::Text, "echo"),
+            (SyntaxKind::Whitespace, " "),
+            (SyntaxKind::Text, "hi"),
+        ]
+    );
+}
+
+#[test]
+fn a_comment_needs_to_start_a_word() {
+    assert_eq!(kinds("# c"), [SyntaxKind::Comment]);
+    assert_eq!(
+        kinds("echo # c"),
+        [
+            SyntaxKind::Text,
+            SyntaxKind::Whitespace,
+            SyntaxKind::Comment
+        ]
+    );
+    assert_eq!(tokens("echo a#b").last(), Some(&(SyntaxKind::Text, "a#b")));
+}
+
+#[test]
+fn operators_take_the_longest_match() {
+    assert_eq!(kinds("&&"), [SyntaxKind::AndAnd]);
+    assert_eq!(kinds(";;&"), [SyntaxKind::SemiSemiAmp]);
+    assert_eq!(kinds(";;"), [SyntaxKind::SemiSemi]);
+    assert_eq!(kinds("<<-"), [SyntaxKind::LessLessDash]);
+    assert_eq!(kinds("<<<"), [SyntaxKind::LessLessLess]);
+    assert_eq!(kinds("<<"), [SyntaxKind::LessLess]);
+    assert_eq!(kinds("&>>"), [SyntaxKind::AmpGreatGreat]);
+}
+
+#[test]
+fn quotes_hold_their_contents_together() {
+    assert_eq!(tokens("'a b'"), [(SyntaxKind::SingleQuoted, "'a b'")]);
+    assert_eq!(
+        tokens("\"a b\""),
+        [
+            (SyntaxKind::DoubleQuote, "\""),
+            (SyntaxKind::Text, "a b"),
+            (SyntaxKind::DoubleQuote, "\""),
+        ]
+    );
+}
+
+#[test]
+fn an_unterminated_quote_runs_to_the_end_rather_than_hanging() {
+    assert_eq!(tokens("'abc"), [(SyntaxKind::SingleQuoted, "'abc")]);
+    assert_eq!(
+        tokens("\"abc"),
+        [(SyntaxKind::DoubleQuote, "\""), (SyntaxKind::Text, "abc")]
+    );
+}
+
+#[test]
+fn a_backslash_escapes_only_some_things_inside_double_quotes() {
+    assert_eq!(
+        tokens("\"\\$ \\d\""),
+        [
+            (SyntaxKind::DoubleQuote, "\""),
+            (SyntaxKind::Escaped, "\\$"),
+            // A backslash before `d` is not an escape, so the run simply restarts after it.
+            (SyntaxKind::Text, " "),
+            (SyntaxKind::Text, "\\d"),
+            (SyntaxKind::DoubleQuote, "\""),
+        ]
+    );
+}
+
+#[test]
+fn ansi_c_quoting_lets_a_backslash_protect_the_closing_quote() {
+    assert_eq!(
+        tokens("$'quote:\\' rest'"),
+        [(SyntaxKind::AnsiCQuoted, "$'quote:\\' rest'")]
+    );
+    assert_eq!(tokens("$'a\\nb'"), [(SyntaxKind::AnsiCQuoted, "$'a\\nb'")]);
+}
+
+#[test]
+fn ansi_c_quoting_is_inert_inside_double_quotes() {
+    // `"$'a'"` is a dollar sign followed by a quoted `a`, not an ANSI-C string.
+    assert_eq!(
+        tokens("\"$'a'\""),
+        [
+            (SyntaxKind::DoubleQuote, "\""),
+            (SyntaxKind::Dollar, "$"),
+            (SyntaxKind::Text, "'a'"),
+            (SyntaxKind::DoubleQuote, "\""),
+        ]
+    );
+}
+
+#[test]
+fn what_was_left_open_at_the_end_is_reported() {
+    assert_eq!(lex("echo 'abc").unclosed.len(), 1);
+    assert_eq!(lex("echo 'abc").unclosed[0].opener, "'");
+    assert_eq!(lex("echo 'abc").unclosed[0].at, 5);
+    assert_eq!(lex("echo \"abc").unclosed[0].opener, "\"");
+    assert_eq!(lex("echo $(ls").unclosed[0].opener, "$(");
+    assert_eq!(lex("echo ${x").unclosed[0].opener, "${");
+    assert_eq!(lex("echo `ls").unclosed[0].opener, "`");
+    assert_eq!(lex("cat <<EOF\nbody\n").unclosed[0].opener, "<<");
+    assert_eq!(lex("$'abc").unclosed[0].opener, "$'");
+    assert!(lex("echo 'abc' \"d\" $(e) `f`").unclosed.is_empty());
+}
+
+#[test]
+fn a_line_continuation_does_not_break_the_word_it_is_in() {
+    assert_eq!(
+        tokens("ab\\\ncd"),
+        [
+            (SyntaxKind::Text, "ab"),
+            (SyntaxKind::LineContinuation, "\\\n"),
+            (SyntaxKind::Text, "cd"),
+        ]
+    );
+    // Still one word, so the `#` is not a comment.
+    assert_eq!(tokens("ab\\\n#c").last(), Some(&(SyntaxKind::Text, "#c")));
+}
+
+#[test]
+fn a_parameter_expansion_names_its_parts() {
+    assert_eq!(
+        tokens("${x:-d}"),
+        [
+            (SyntaxKind::DollarBrace, "${"),
+            (SyntaxKind::Text, "x"),
+            (SyntaxKind::ParamOp, ":-"),
+            (SyntaxKind::Text, "d"),
+            (SyntaxKind::RBrace, "}"),
+        ]
+    );
+}
+
+#[test]
+fn an_operator_before_the_name_is_told_from_one_after_it() {
+    assert_eq!(
+        tokens("${#x}"),
+        [
+            (SyntaxKind::DollarBrace, "${"),
+            (SyntaxKind::ParamOp, "#"),
+            (SyntaxKind::Text, "x"),
+            (SyntaxKind::RBrace, "}"),
+        ]
+    );
+    assert_eq!(
+        tokens("${x#y}"),
+        [
+            (SyntaxKind::DollarBrace, "${"),
+            (SyntaxKind::Text, "x"),
+            (SyntaxKind::ParamOp, "#"),
+            (SyntaxKind::Text, "y"),
+            (SyntaxKind::RBrace, "}"),
+        ]
+    );
+}
+
+#[test]
+fn an_operator_stops_where_the_operand_begins() {
+    assert_eq!(
+        tokens("${x:-/tmp}"),
+        [
+            (SyntaxKind::DollarBrace, "${"),
+            (SyntaxKind::Text, "x"),
+            (SyntaxKind::ParamOp, ":-"),
+            (SyntaxKind::Text, "/tmp"),
+            (SyntaxKind::RBrace, "}"),
+        ]
+    );
+    assert_eq!(
+        tokens("${x//a/b}").get(2),
+        Some(&(SyntaxKind::ParamOp, "//"))
+    );
+    assert_eq!(
+        tokens("${x/#a/b}").get(2),
+        Some(&(SyntaxKind::ParamOp, "/#"))
+    );
+}
+
+#[test]
+fn a_subscript_is_its_own_pair() {
+    assert_eq!(
+        tokens("${a[0]}"),
+        [
+            (SyntaxKind::DollarBrace, "${"),
+            (SyntaxKind::Text, "a"),
+            (SyntaxKind::LBracket, "["),
+            (SyntaxKind::Text, "0"),
+            (SyntaxKind::RBracket, "]"),
+            (SyntaxKind::RBrace, "}"),
+        ]
+    );
+    // A subscript is arithmetic, so its `-` and `+` are not operators on the parameter.
+    assert_eq!(
+        tokens("${h[i+1]}"),
+        [
+            (SyntaxKind::DollarBrace, "${"),
+            (SyntaxKind::Text, "h"),
+            (SyntaxKind::LBracket, "["),
+            (SyntaxKind::Text, "i"),
+            (SyntaxKind::Text, "+1"),
+            (SyntaxKind::RBracket, "]"),
+            (SyntaxKind::RBrace, "}"),
+        ]
+    );
+    assert_eq!(
+        tokens("${h[-1]}").get(4),
+        Some(&(SyntaxKind::RBracket, "]"))
+    );
+    // `@` is not a name, so the run that reads it must still stop at the bracket.
+    assert_eq!(
+        tokens("${a[@]}"),
+        [
+            (SyntaxKind::DollarBrace, "${"),
+            (SyntaxKind::Text, "a"),
+            (SyntaxKind::LBracket, "["),
+            (SyntaxKind::Text, "@"),
+            (SyntaxKind::RBracket, "]"),
+            (SyntaxKind::RBrace, "}"),
+        ]
+    );
+}
+
+#[test]
+fn a_command_substitution_holds_ordinary_shell() {
+    assert_eq!(
+        tokens("$(echo hi)"),
+        [
+            (SyntaxKind::DollarParen, "$("),
+            (SyntaxKind::Text, "echo"),
+            (SyntaxKind::Whitespace, " "),
+            (SyntaxKind::Text, "hi"),
+            (SyntaxKind::RParen, ")"),
+        ]
+    );
+}
+
+#[test]
+fn arithmetic_finds_its_own_end() {
+    assert_eq!(
+        tokens("$((1 + 2))"),
+        [
+            (SyntaxKind::DollarParenParen, "$(("),
+            (SyntaxKind::Text, "1 + 2"),
+            (SyntaxKind::RParenRParen, "))"),
+        ]
+    );
+}
+
+#[test]
+fn arithmetic_counts_its_nested_parentheses() {
+    assert_eq!(
+        tokens("$(( (1+2)*3 ))"),
+        [
+            (SyntaxKind::DollarParenParen, "$(("),
+            (SyntaxKind::Text, " (1+2)*3 "),
+            (SyntaxKind::RParenRParen, "))"),
+        ]
+    );
+}
+
+#[test]
+fn empty_arithmetic_does_not_swallow_its_closer() {
+    assert_eq!(
+        kinds("$(())"),
+        [SyntaxKind::DollarParenParen, SyntaxKind::RParenRParen]
+    );
+}
+
+#[test]
+fn a_tilde_only_counts_at_the_start_of_a_word() {
+    assert_eq!(
+        tokens("~/x"),
+        [(SyntaxKind::Tilde, "~"), (SyntaxKind::Text, "/x")]
+    );
+    assert_eq!(tokens("~user"), [(SyntaxKind::Tilde, "~user")]);
+    assert_eq!(tokens("a~b"), [(SyntaxKind::Text, "a~b")]);
+}
+
+#[test]
+fn a_here_document_body_starts_on_the_next_line() {
+    assert_eq!(
+        tokens("cat <<EOF\nbody\nEOF\n"),
+        [
+            (SyntaxKind::Text, "cat"),
+            (SyntaxKind::Whitespace, " "),
+            (SyntaxKind::LessLess, "<<"),
+            (SyntaxKind::Text, "EOF"),
+            (SyntaxKind::Newline, "\n"),
+            (SyntaxKind::HeredocText, "body\n"),
+            (SyntaxKind::HeredocEnd, "EOF\n"),
+        ]
+    );
+}
+
+#[test]
+fn a_dash_strips_tabs_before_the_terminator() {
+    assert_eq!(
+        tokens("cat <<-EOF\n\tbody\n\tEOF\n").split_at(5).1,
+        [
+            (SyntaxKind::HeredocText, "\tbody\n"),
+            (SyntaxKind::HeredocEnd, "\tEOF\n"),
+        ]
+    );
+    // Without the dash the same terminator does not close it.
+    assert_eq!(
+        tokens("cat <<EOF\n\tEOF\n").split_at(5).1,
+        [(SyntaxKind::HeredocText, "\tEOF\n")]
+    );
+}
+
+#[test]
+fn a_quoted_delimiter_still_closes_the_body() {
+    assert_eq!(
+        tokens("cat <<'EOF'\n$x\nEOF\n").split_at(5).1,
+        [
+            (SyntaxKind::HeredocText, "$x\n"),
+            (SyntaxKind::HeredocEnd, "EOF\n"),
+        ]
+    );
+}
+
+#[test]
+fn a_space_before_the_delimiter_is_allowed() {
+    assert_eq!(
+        tokens("cat << EOF\nx\nEOF\n").split_at(6).1,
+        [
+            (SyntaxKind::HeredocText, "x\n"),
+            (SyntaxKind::HeredocEnd, "EOF\n"),
+        ]
+    );
+}
+
+#[test]
+fn two_here_documents_on_one_line_take_their_bodies_in_order() {
+    let all = tokens("cat <<A <<B\na\nA\nb\nB\n");
+    assert_eq!(
+        all.split_at(8).1,
+        [
+            (SyntaxKind::HeredocText, "a\n"),
+            (SyntaxKind::HeredocEnd, "A\n"),
+            (SyntaxKind::HeredocText, "b\n"),
+            (SyntaxKind::HeredocEnd, "B\n"),
+        ]
+    );
+}
+
+#[test]
+fn an_unterminated_body_runs_to_the_end_of_the_file() {
+    assert_eq!(
+        tokens("cat <<EOF\nbody\n").split_at(5).1,
+        [(SyntaxKind::HeredocText, "body\n")]
+    );
+}
+
+#[test]
+fn a_here_string_is_not_a_here_document() {
+    assert_eq!(
+        tokens("cat <<<word\nnext\n"),
+        [
+            (SyntaxKind::Text, "cat"),
+            (SyntaxKind::Whitespace, " "),
+            (SyntaxKind::LessLessLess, "<<<"),
+            (SyntaxKind::Text, "word"),
+            (SyntaxKind::Newline, "\n"),
+            (SyntaxKind::Text, "next"),
+            (SyntaxKind::Newline, "\n"),
+        ]
+    );
+}
+
+#[test]
+fn a_lone_dollar_is_just_a_character() {
+    assert_eq!(
+        tokens("5$"),
+        [(SyntaxKind::Text, "5"), (SyntaxKind::Dollar, "$")]
+    );
+}
