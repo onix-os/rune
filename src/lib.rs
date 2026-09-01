@@ -15,6 +15,7 @@
 //! - [`tree`] is the tree itself, and [`Builder`] is the only way to make one.
 //! - [`Error`] is one thing that went wrong. Parsing collects them rather than returning them.
 
+pub mod ast;
 pub mod error;
 pub mod lex;
 pub mod parse;
@@ -22,6 +23,7 @@ pub mod source;
 pub mod span;
 pub mod tree;
 
+pub use ast::Script;
 pub use error::{Completeness, Error, Severity};
 pub use lex::{Lexed, lex};
 pub use parse::{Parsed, parse};

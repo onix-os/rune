@@ -3,24 +3,9 @@
 use super::Parser;
 use crate::tree::SyntaxKind;
 
-const OPERATORS: [SyntaxKind; 12] = [
-    SyntaxKind::Less,
-    SyntaxKind::Great,
-    SyntaxKind::GreatGreat,
-    SyntaxKind::LessGreat,
-    SyntaxKind::LessAmp,
-    SyntaxKind::GreatAmp,
-    SyntaxKind::LessLess,
-    SyntaxKind::LessLessDash,
-    SyntaxKind::LessLessLess,
-    SyntaxKind::GreatPipe,
-    SyntaxKind::AmpGreat,
-    SyntaxKind::AmpGreatGreat,
-];
-
 impl Parser<'_> {
     pub(super) fn at_redirect(&self) -> bool {
-        self.peek().is_some_and(|kind| OPERATORS.contains(&kind)) || self.at_fd_prefix()
+        self.peek().is_some_and(SyntaxKind::is_redirect_operator) || self.at_fd_prefix()
     }
 
     /// `2>&1` — digits touching a redirection operator name the descriptor being redirected.
@@ -40,7 +25,7 @@ impl Parser<'_> {
         }
         self.tokens
             .get(index + 1)
-            .is_some_and(|next| OPERATORS.contains(&next.kind))
+            .is_some_and(|next| next.kind.is_redirect_operator())
     }
 
     pub(super) fn redirect(&mut self) {

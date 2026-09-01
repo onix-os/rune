@@ -198,6 +198,25 @@ impl SyntaxKind {
         )
     }
 
+    /// Whether this operator sends a file descriptor somewhere.
+    pub const fn is_redirect_operator(self) -> bool {
+        matches!(
+            self,
+            Self::Less
+                | Self::Great
+                | Self::GreatGreat
+                | Self::LessGreat
+                | Self::LessAmp
+                | Self::GreatAmp
+                | Self::LessLess
+                | Self::LessLessDash
+                | Self::LessLessLess
+                | Self::GreatPipe
+                | Self::AmpGreat
+                | Self::AmpGreatGreat
+        )
+    }
+
     /// Present in the tree, absent from the grammar.
     ///
     /// A newline is not in here. In shell it separates commands, which makes it as much a part of
