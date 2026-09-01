@@ -158,7 +158,22 @@ pub enum SyntaxKind {
     Subshell,
     Group,
     ArithCommand,
+    /// `[[ ... ]]`.
     CondCommand,
+    /// `a || b` inside `[[ ]]`.
+    CondOr,
+    /// `a && b` inside `[[ ]]`.
+    CondAnd,
+    /// `! a` inside `[[ ]]`.
+    CondNot,
+    /// `( a )` inside `[[ ]]`.
+    CondGroup,
+    /// `-f x` — an operator and one operand.
+    CondUnary,
+    /// `x == y` — two operands and an operator between them.
+    CondBinary,
+    /// A bare word used as a test on its own, as in `[[ $x ]]`.
+    CondWord,
     /// A region the parser could not make sense of. Its children hold the text verbatim.
     Error,
 }

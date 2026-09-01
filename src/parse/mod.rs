@@ -9,6 +9,7 @@
 
 mod assign;
 mod command;
+mod cond;
 mod compound;
 mod redirect;
 mod word;

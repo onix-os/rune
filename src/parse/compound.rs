@@ -217,25 +217,6 @@ impl Parser<'_> {
         self.unclosed("((", opened_at, &[SyntaxKind::RParen]);
     }
 
-    /// `[[ ... ]]`, whose contents are a test expression rather than a command.
-    fn cond_command(&mut self) {
-        let opened_at = self.position();
-        self.start(SyntaxKind::CondCommand);
-        self.bump_as(SyntaxKind::LBracketBracket);
-        while !self.at_end() && !self.at_word_exactly("]]") {
-            if self.at_word() {
-                self.word();
-            } else {
-                self.bump();
-            }
-        }
-        if self.at_word_exactly("]]") {
-            self.bump_as(SyntaxKind::RBracketBracket);
-        } else {
-            self.unclosed("[[", opened_at, &[SyntaxKind::RBracketBracket]);
-        }
-        self.finish_node();
-    }
 
     fn case_command(&mut self) {
         let opened_at = self.position();
