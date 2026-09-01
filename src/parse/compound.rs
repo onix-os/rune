@@ -64,7 +64,12 @@ impl Parser<'_> {
         self.start(SyntaxKind::IfCommand);
         self.bump_as(SyntaxKind::If);
         self.command_list_until(&[]);
-        self.expect_keyword(SyntaxKind::Then, "if", opened_at);
+        if !self.expect_keyword(SyntaxKind::Then, "if", opened_at) {
+            // Without a `then` there is no body to look for a `fi` after. Saying so twice about
+            // the same `if` tells nobody anything new.
+            self.finish_node();
+            return;
+        }
         self.command_list_until(&[]);
 
         while self.at_keyword(SyntaxKind::Elif) {
@@ -92,9 +97,10 @@ impl Parser<'_> {
         self.start(node);
         self.bump_as(keyword);
         self.command_list_until(&[]);
-        self.expect_keyword(SyntaxKind::Do, opener, opened_at);
-        self.command_list_until(&[]);
-        self.expect_keyword(SyntaxKind::Done, opener, opened_at);
+        if self.expect_keyword(SyntaxKind::Do, opener, opened_at) {
+            self.command_list_until(&[]);
+            self.expect_keyword(SyntaxKind::Done, opener, opened_at);
+        }
         self.finish_node();
     }
 
@@ -116,9 +122,10 @@ impl Parser<'_> {
             }
         }
         self.end_of_header();
-        self.expect_keyword(SyntaxKind::Do, "for", opened_at);
-        self.command_list_until(&[]);
-        self.expect_keyword(SyntaxKind::Done, "for", opened_at);
+        if self.expect_keyword(SyntaxKind::Do, "for", opened_at) {
+            self.command_list_until(&[]);
+            self.expect_keyword(SyntaxKind::Done, "for", opened_at);
+        }
         self.finish_node();
     }
 
@@ -138,9 +145,10 @@ impl Parser<'_> {
             }
         }
         self.end_of_header();
-        self.expect_keyword(SyntaxKind::Do, "select", opened_at);
-        self.command_list_until(&[]);
-        self.expect_keyword(SyntaxKind::Done, "select", opened_at);
+        if self.expect_keyword(SyntaxKind::Do, "select", opened_at) {
+            self.command_list_until(&[]);
+            self.expect_keyword(SyntaxKind::Done, "select", opened_at);
+        }
         self.finish_node();
     }
 
@@ -150,9 +158,10 @@ impl Parser<'_> {
         self.bump_as(SyntaxKind::For);
         self.take_double_parens();
         self.end_of_header();
-        self.expect_keyword(SyntaxKind::Do, "for", opened_at);
-        self.command_list_until(&[]);
-        self.expect_keyword(SyntaxKind::Done, "for", opened_at);
+        if self.expect_keyword(SyntaxKind::Do, "for", opened_at) {
+            self.command_list_until(&[]);
+            self.expect_keyword(SyntaxKind::Done, "for", opened_at);
+        }
         self.finish_node();
     }
 
@@ -238,7 +247,10 @@ impl Parser<'_> {
             self.error("`case` needs a word to match against");
         }
         self.skip_newlines();
-        self.expect_keyword(SyntaxKind::In, "case", opened_at);
+        if !self.expect_keyword(SyntaxKind::In, "case", opened_at) {
+            self.finish_node();
+            return;
+        }
         self.skip_newlines();
         while !self.at_end() && !self.at_keyword(SyntaxKind::Esac) {
             let before = self.progress();

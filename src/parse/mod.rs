@@ -143,6 +143,20 @@ impl<'a> Parser<'a> {
             );
         }
         self.errors.sort_by_key(|error| error.span.start);
+        // One broken construct, one message. The rules bail out rather than ask twice, but a
+        // mistake that reaches two of them anyway should still only be heard once.
+        let mut seen: Vec<(u32, String)> = Vec::new();
+        self.errors.retain(|error| match error.opened_at {
+            None => true,
+            Some(span) => {
+                let key = (span.start, error.message.clone());
+                if seen.contains(&key) {
+                    return false;
+                }
+                seen.push(key);
+                true
+            }
+        });
     }
 
     // ---- looking ----

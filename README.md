@@ -11,15 +11,36 @@ parse. Concatenating the tree's tokens returns the input unchanged, which is the
 whole crate rests on and the one the test suite asserts on everything it parses. Recovery, syntax
 highlighting and a formatter are all built on it.
 
-## State
+## What it does so far
 
-Early. The tree and its builder, spans, the source index, and the tokenizer exist and are tested.
-The tokenizer handles quoting, escapes, every `$` form, and here-documents, and it accounts for
-every byte of oslo's 432-script corpus with nothing left unrecognised. There is no grammar yet, so
-nothing produces a tree from shell — see `PLAN.md` for the order the rest arrives in.
+Reads shell and gives back a tree, with a typed view over it and a list of what it could not make
+sense of.
+
+- **Tokenizer** — quoting (including `$'…'`, where a backslash protects the closing quote), every
+  `$` form, process substitution, and here-documents, which begin on the line *after* the one that
+  asked for them.
+- **Grammar** — hand-written recursive descent. Pipelines, and-or lists, every compound command,
+  functions, assignments and redirections. Reserved words are recognised where they are reserved:
+  `if` opens a conditional, `echo if` prints a word.
+- **Recovery** — one mistake, one message. A stray `done` used to produce 133 errors in one file;
+  it now produces two. Each report names the construct, points at where it opened, and says what
+  would have closed it.
+- **Typed view** — `Script::of(tree)` and accessors down from there. Nothing owns anything, so the
+  view cannot drift from the tree.
+- **`Parsed::completeness`** — `Complete`, `Unfinished` or `Invalid`, which is what an interactive
+  prompt needs to decide between running a line, reading another, and complaining.
+
+Against oslo's corpus of 432 real scripts: every one reconstructs byte for byte, and 424 parse with
+nothing to report. Seven of the other eight are fixtures written to be broken; the last is a
+genuine unterminated quote.
+
+Not done: the arithmetic sub-grammar, and single-token repair for typos. See `PLAN.md`.
 
 ```sh
-# lex a directory of real scripts and report what turns up
+# parse a script and show the tree
+cargo run --example main -- script.sh
+
+# check the parser against a directory of real scripts
 RUNE_CORPUS=/path/to/scripts cargo test --test against_a_corpus -- --ignored --nocapture
 ```
 

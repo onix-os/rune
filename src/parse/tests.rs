@@ -327,6 +327,19 @@ fn one_unclosed_construct_is_reported_once() {
     // The rule and the lexer both notice `$(`; only one of them should speak.
     assert_eq!(errors("echo $(ls"), ["this `$(` was never closed"]);
     assert_eq!(errors("echo ${x"), ["this `${` was never closed"]);
+    // An `if` with no `then` used to be reported once for the `then` and again for the `fi`.
+    assert_eq!(
+        errors("echo $(if)"),
+        [
+            "this is not something a command can start with",
+            // Both are reported at the end of the input, innermost first.
+            "this `if` was never closed",
+            "this `$(` was never closed",
+        ]
+    );
+    assert_eq!(errors("while a").len(), 1);
+    assert_eq!(errors("for i in a").len(), 1);
+    assert_eq!(errors("case $x").len(), 1);
 }
 
 #[test]
