@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.3] - 2026-09-01
+
+### <!-- 0 -->⛰️  Features
+
+- A formatter that only moves whitespace
+
 ## [0.1.2] - 2026-09-01
 
 ### <!-- 0 -->⛰️  Features

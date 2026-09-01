@@ -154,3 +154,107 @@ fn the_parser_covers_every_byte_and_says_what_it_could_not_read() {
         }
     }
 }
+
+/// The two things a formatter must never get wrong, over real shell.
+///
+/// **Idempotence** — formatting twice is formatting once — and **meaning** — the node tree and the
+/// significant tokens are the same before and after. Invented samples prove a formatter handles
+/// what its author thought of; 400 scripts nobody wrote for it prove the rest.
+#[test]
+#[ignore = "needs RUNE_CORPUS pointing at a directory of shell scripts"]
+fn formatting_is_idempotent_and_keeps_the_tree() {
+    let root = std::env::var("RUNE_CORPUS").expect("set RUNE_CORPUS to a directory of scripts");
+    let mut scripts = Vec::new();
+    shell_scripts(Path::new(&root), &mut scripts);
+    scripts.sort();
+    assert!(!scripts.is_empty(), "no .sh or .bash files under {root}");
+
+    let mut formatted = 0;
+    let mut refused = 0;
+    let mut unchanged = 0;
+
+    for path in &scripts {
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(once) = rune::format(&text) else {
+            refused += 1;
+            continue;
+        };
+        formatted += 1;
+        if once == text {
+            unchanged += 1;
+        }
+
+        // What the formatter wrote, the parser has to be able to read. The sharpest failure there
+        // is, so it names the file and shows what came out.
+        let twice = match rune::format(&once) {
+            Ok(twice) => twice,
+            Err(errors) => panic!(
+                "formatting {} produced something that will not parse: {}\n---\n{once}---",
+                path.display(),
+                errors
+                    .iter()
+                    .map(|error| error.message.clone())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        };
+        assert_eq!(twice, once, "formatting {} twice moved it", path.display());
+        assert_eq!(
+            shape(&text),
+            shape(&once),
+            "formatting changed the tree of {}",
+            path.display()
+        );
+    }
+
+    println!(
+        "\n{formatted} of {} scripts formatted ({unchanged} already were), {refused} refused",
+        scripts.len()
+    );
+}
+
+/// The node tree and every token that is not a separator.
+///
+/// Trivia is what a formatter rewrites, so trivia is what this ignores; `;` and a newline are one
+/// separator written two ways, so they go with it. Anything else that differs is a program that
+/// changed.
+fn shape(text: &str) -> (Vec<String>, Vec<String>) {
+    let parsed = rune::parse(text);
+    let mut kinds = Vec::new();
+    let mut texts = Vec::new();
+    walk(
+        parsed.tree().root(),
+        parsed.tree().source(),
+        &mut kinds,
+        &mut texts,
+    );
+    (kinds, texts)
+}
+
+fn walk(
+    node: &rune::Node,
+    source: &rune::Source,
+    kinds: &mut Vec<String>,
+    texts: &mut Vec<String>,
+) {
+    kinds.push(format!("{:?}", node.kind()));
+    for child in node.children() {
+        match child {
+            rune::Element::Node(inner) => walk(inner, source, kinds, texts),
+            rune::Element::Token(token) => {
+                if !matches!(
+                    token.kind(),
+                    SyntaxKind::Whitespace
+                        | SyntaxKind::Comment
+                        | SyntaxKind::LineContinuation
+                        | SyntaxKind::Newline
+                        | SyntaxKind::Semi
+                ) {
+                    texts.push(token.text(source).to_string());
+                }
+            }
+        }
+    }
+}
