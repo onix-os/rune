@@ -16,11 +16,13 @@
 //! - [`Error`] is one thing that went wrong. Parsing collects them rather than returning them.
 
 pub mod error;
+pub mod lex;
 pub mod source;
 pub mod span;
 pub mod tree;
 
 pub use error::{Completeness, Error, Severity};
+pub use lex::{Lexed, lex};
 pub use source::Source;
 pub use span::Span;
 pub use tree::{Builder, Element, Node, SyntaxKind, Token, Tree};

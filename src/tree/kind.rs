@@ -27,6 +27,28 @@ pub enum SyntaxKind {
     Escaped,
     /// A whole `'...'`, which has no interior structure.
     SingleQuoted,
+    /// Either end of a `"..."`. Which end it is follows from where it sits.
+    DoubleQuote,
+    /// A `$` that expands nothing — the last character of a word, or before a space.
+    Dollar,
+    /// `$name`.
+    DollarName,
+    /// One of `$?`, `$$`, `$!`, `$#`, `$*`, `$@`, `$-`, `$_`, or `$0` through `$9`.
+    DollarSpecial,
+    /// The `${` that opens a parameter expansion.
+    DollarBrace,
+    /// The `$(` that opens a command substitution. What is inside is ordinary shell.
+    DollarParen,
+    /// The `$((` that opens an arithmetic expansion.
+    DollarParenParen,
+    /// An operator inside `${...}`, such as `:-`, `##`, or `%%`.
+    ParamOp,
+    LBracket,
+    RBracket,
+    /// Either end of a `` `...` ``.
+    Backtick,
+    /// A `~` or `~user` at the start of a word.
+    Tilde,
     /// A byte the tokenizer could not classify.
     Unknown,
 
@@ -44,8 +66,6 @@ pub enum SyntaxKind {
     RParen,
     LBrace,
     RBrace,
-    LParenLParen,
-    RParenRParen,
     LBracketBracket,
     RBracketBracket,
     Less,
@@ -150,8 +170,6 @@ impl SyntaxKind {
             Self::RParen => ")",
             Self::LBrace => "{",
             Self::RBrace => "}",
-            Self::LParenLParen => "((",
-            Self::RParenRParen => "))",
             Self::LBracketBracket => "[[",
             Self::RBracketBracket => "]]",
             Self::Less => "<",
