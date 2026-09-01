@@ -46,6 +46,7 @@ impl Lexer<'_> {
             }
             Some('(') => {
                 self.cursor.bump();
+                self.push_mode(Mode::CommandSub { depth: 0 });
                 SyntaxKind::DollarParen
             }
             Some('{') => {
@@ -110,6 +111,20 @@ impl Lexer<'_> {
             }
             // Past the operator the rest is an ordinary word, and can hold anything a word can.
             _ => self.word_piece(),
+        }
+    }
+
+    /// The `))` that ends an arithmetic expansion, as one token.
+    ///
+    /// A lone `)` here means the expansion was never finished properly; it is taken as the close
+    /// anyway, and the parser is what says so.
+    pub(super) fn close_arithmetic(&mut self) -> SyntaxKind {
+        self.pop_mode();
+        self.cursor.bump();
+        if self.cursor.eat_char(')') {
+            SyntaxKind::RParenRParen
+        } else {
+            SyntaxKind::RParen
         }
     }
 

@@ -47,6 +47,10 @@ pub enum SyntaxKind {
     RBracket,
     /// Either end of a `` `...` ``.
     Backtick,
+    /// The `<(` that opens a process substitution.
+    ProcSubIn,
+    /// The `>(` that opens a process substitution.
+    ProcSubOut,
     /// A `~` or `~user` at the start of a word.
     Tilde,
     /// The body of a here-document, from the line after `<<DELIM` to the line before its end.
@@ -68,6 +72,11 @@ pub enum SyntaxKind {
     Amp,
     LParen,
     RParen,
+    /// The `))` that closes a `$((`.
+    ///
+    /// One token rather than two so that an arithmetic expansion nested inside a command
+    /// substitution does not look like it closed the substitution.
+    RParenRParen,
     LBrace,
     RBrace,
     LBracketBracket,
@@ -116,7 +125,19 @@ pub enum SyntaxKind {
     Pipeline,
     SimpleCommand,
     Assignment,
+    /// The value of an assignment written as `(a b c)`.
+    ArrayValue,
     Word,
+    /// `$(...)` or `` `...` ``, holding a whole script of its own.
+    CommandSubstitution,
+    /// `<(...)` or `>(...)`, which is a word: it expands to the name of a pipe.
+    ProcessSubstitution,
+    /// `${...}`.
+    ParameterExpansion,
+    /// The `[...]` of `${a[i]}`.
+    Subscript,
+    /// `$((...))`.
+    ArithmeticExpansion,
     Redirect,
     HeredocBody,
     FunctionDef,
@@ -127,6 +148,8 @@ pub enum SyntaxKind {
     UntilCommand,
     ForCommand,
     ArithForCommand,
+    /// `select name in words; do ... done`.
+    SelectCommand,
     CaseCommand,
     CaseItem,
     CasePattern,
@@ -147,11 +170,42 @@ impl SyntaxKind {
         !self.is_node()
     }
 
-    /// Whitespace, comments, and line continuations: present in the tree, absent from the grammar.
+    /// Whether a token of this kind is part of a word.
+    ///
+    /// Adjacent pieces are one word: `pre"$mid"post` is a single argument. Nothing but adjacency
+    /// joins them, which is why this is a property of the kind rather than of the grammar.
+    pub const fn is_word_piece(self) -> bool {
+        matches!(
+            self,
+            Self::Text
+                | Self::Escaped
+                | Self::SingleQuoted
+                | Self::DoubleQuote
+                | Self::Dollar
+                | Self::DollarName
+                | Self::DollarSpecial
+                | Self::DollarBrace
+                | Self::DollarParen
+                | Self::DollarParenParen
+                | Self::Backtick
+                | Self::ProcSubIn
+                | Self::ProcSubOut
+                | Self::Tilde
+                | Self::ParamOp
+                | Self::LBracket
+                | Self::RBracket
+                | Self::RBrace
+        )
+    }
+
+    /// Present in the tree, absent from the grammar.
+    ///
+    /// A newline is not in here. In shell it separates commands, which makes it as much a part of
+    /// the grammar as `;` — a parser that skipped it would run two lines together.
     pub const fn is_trivia(self) -> bool {
         matches!(
             self,
-            Self::Whitespace | Self::Newline | Self::Comment | Self::LineContinuation
+            Self::Whitespace | Self::Comment | Self::LineContinuation
         )
     }
 
@@ -172,6 +226,7 @@ impl SyntaxKind {
             Self::Amp => "&",
             Self::LParen => "(",
             Self::RParen => ")",
+            Self::RParenRParen => "))",
             Self::LBrace => "{",
             Self::RBrace => "}",
             Self::LBracketBracket => "[[",
@@ -261,9 +316,13 @@ mod tests {
     #[test]
     fn trivia_is_only_trivia() {
         assert!(SyntaxKind::Comment.is_trivia());
-        assert!(SyntaxKind::Newline.is_trivia());
+        assert!(SyntaxKind::Whitespace.is_trivia());
         assert!(!SyntaxKind::Text.is_trivia());
         assert!(!SyntaxKind::Semi.is_trivia());
+        assert!(
+            !SyntaxKind::Newline.is_trivia(),
+            "a newline separates commands"
+        );
     }
 
     #[test]

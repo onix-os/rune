@@ -48,7 +48,7 @@ impl<'a> Lexer<'a> {
         if self.awaiting_delimiter.is_none() {
             return;
         }
-        if super::word::continues_a_word(kind) {
+        if kind.is_word_piece() {
             self.delimiter_text.push_str(text);
             return;
         }

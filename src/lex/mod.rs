@@ -58,6 +58,14 @@ pub(crate) enum Mode {
     Brace { stage: BraceStage },
     /// Inside `$((...))`, counting nested parentheses to find the end.
     Arithmetic { depth: i32 },
+    /// Inside `$(...)`, counting parentheses to find the one that closes it.
+    ///
+    /// A command substitution holds ordinary shell wherever it appears, so this has to be a mode
+    /// of its own rather than a continuation of the one around it: in `"$(ls)"` the quoting stops
+    /// at the `$(` and starts again after the `)`.
+    CommandSub { depth: i32 },
+    /// Inside `` `...` ``, which is a command substitution written the old way.
+    Backtick,
 }
 
 pub(crate) struct Lexer<'a> {
@@ -127,14 +135,31 @@ impl<'a> Lexer<'a> {
             Mode::Brace { stage } => self.brace_piece(stage),
             Mode::Arithmetic { .. } => {
                 if self.cursor.peek() == Some(')') {
-                    // The first `)` of the closing `))`. Leave arithmetic and let both be read
-                    // as the ordinary operators they are.
-                    self.pop_mode();
-                    return self.normal_token();
+                    return self.close_arithmetic();
                 }
                 self.arithmetic_run()
             }
-            Mode::Normal => self.normal_token(),
+            Mode::CommandSub { depth } => {
+                if self.cursor.peek() == Some(')') {
+                    self.cursor.bump();
+                    if depth == 0 {
+                        self.pop_mode();
+                    } else {
+                        self.bump_sub_depth(-1);
+                    }
+                    return SyntaxKind::RParen;
+                }
+                let kind = self.normal_token();
+                // Anything that opens a parenthesis owes a `)` that is not the closing one.
+                if matches!(
+                    kind,
+                    SyntaxKind::LParen | SyntaxKind::ProcSubIn | SyntaxKind::ProcSubOut
+                ) {
+                    self.bump_sub_depth(1);
+                }
+                kind
+            }
+            Mode::Normal | Mode::Backtick => self.normal_token(),
         }
     }
 
@@ -196,12 +221,18 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    pub(crate) fn bump_sub_depth(&mut self, by: i32) {
+        if let Some(Mode::CommandSub { depth }) = self.modes.last_mut() {
+            *depth = depth.saturating_add(by).max(0);
+        }
+    }
+
     fn emit(&mut self, kind: SyntaxKind, len: u32) {
         // A word runs on while its pieces are adjacent; trivia and operators end it. A line
         // continuation is neither: the shell removes it, so `ab\<newline>cd` is the one word
         // `abcd` and the `#` in `ab\<newline>#c` is not a comment.
         if kind != SyntaxKind::LineContinuation {
-            self.at_word_start = !word::continues_a_word(kind);
+            self.at_word_start = !kind.is_word_piece();
         }
         self.out.push(Lexed { kind, len });
     }

@@ -321,8 +321,7 @@ fn arithmetic_finds_its_own_end() {
         [
             (SyntaxKind::DollarParenParen, "$(("),
             (SyntaxKind::Text, "1 + 2"),
-            (SyntaxKind::RParen, ")"),
-            (SyntaxKind::RParen, ")"),
+            (SyntaxKind::RParenRParen, "))"),
         ]
     );
 }
@@ -334,8 +333,7 @@ fn arithmetic_counts_its_nested_parentheses() {
         [
             (SyntaxKind::DollarParenParen, "$(("),
             (SyntaxKind::Text, " (1+2)*3 "),
-            (SyntaxKind::RParen, ")"),
-            (SyntaxKind::RParen, ")"),
+            (SyntaxKind::RParenRParen, "))"),
         ]
     );
 }
@@ -344,11 +342,7 @@ fn arithmetic_counts_its_nested_parentheses() {
 fn empty_arithmetic_does_not_swallow_its_closer() {
     assert_eq!(
         kinds("$(())"),
-        [
-            SyntaxKind::DollarParenParen,
-            SyntaxKind::RParen,
-            SyntaxKind::RParen,
-        ]
+        [SyntaxKind::DollarParenParen, SyntaxKind::RParenRParen]
     );
 }
 

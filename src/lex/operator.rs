@@ -42,6 +42,15 @@ pub(super) const fn starts_one(ch: char) -> bool {
 
 impl Lexer<'_> {
     pub(super) fn operator(&mut self) -> SyntaxKind {
+        // `<(cmd)` is a word, not a redirection: it expands to the name of a pipe, and `diff <(a)
+        // <(b)` passes `diff` two ordinary arguments. The parenthesis has to be touching — with a
+        // space, `<` is a redirection and bash rejects what follows.
+        if self.cursor.eat("<(") {
+            return SyntaxKind::ProcSubIn;
+        }
+        if self.cursor.eat(">(") {
+            return SyntaxKind::ProcSubOut;
+        }
         for (text, kind) in OPERATORS {
             if self.cursor.eat(text) {
                 return *kind;

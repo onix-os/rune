@@ -86,3 +86,59 @@ fn the_lexer_accounts_for_every_byte_of_real_shell() {
         }
     }
 }
+
+#[test]
+#[ignore = "needs RUNE_CORPUS pointing at a directory of shell scripts"]
+fn the_parser_covers_every_byte_and_says_what_it_could_not_read() {
+    let root = std::env::var("RUNE_CORPUS").expect("set RUNE_CORPUS to a directory of scripts");
+    let mut scripts = Vec::new();
+    shell_scripts(Path::new(&root), &mut scripts);
+    scripts.sort();
+    assert!(!scripts.is_empty(), "no .sh or .bash files under {root}");
+
+    let mut clean = 0;
+    let mut complained = Vec::new();
+    let mut messages: BTreeMap<String, usize> = BTreeMap::new();
+
+    for path in &scripts {
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
+        let parsed = rune::parse(&text);
+
+        // The invariant, on real shell: whatever the parser made of it, nothing was lost.
+        assert_eq!(
+            parsed.tree().reconstruct(),
+            text,
+            "the tree does not reproduce {}",
+            path.display()
+        );
+
+        if parsed.is_clean() {
+            clean += 1;
+        } else {
+            complained.push((path.display().to_string(), parsed.errors().len()));
+            for error in parsed.errors() {
+                *messages.entry(error.message.clone()).or_default() += 1;
+            }
+        }
+    }
+
+    println!(
+        "\n{clean} of {} scripts parsed with nothing to report",
+        scripts.len()
+    );
+    if !messages.is_empty() {
+        println!("\nwhat the rest said:");
+        let mut sorted: Vec<_> = messages.iter().collect();
+        sorted.sort_by_key(|(_, count)| std::cmp::Reverse(**count));
+        for (message, count) in sorted.iter().take(15) {
+            println!("{count:>8}  {message}");
+        }
+        println!("\nfiles, worst first:");
+        complained.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+        for (path, count) in complained.iter().take(15) {
+            println!("{count:>8}  {path}");
+        }
+    }
+}

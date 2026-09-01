@@ -2,44 +2,24 @@
 //!
 //! A word is not a token. `pre"$mid"post` is one word built from five pieces, and what holds it
 //! together is nothing more than the pieces being adjacent — no whitespace and no operator between
-//! them. The lexer emits the pieces and [`continues_a_word`] says which ones can be joined; the
-//! parser does the joining.
+//! them. The lexer emits the pieces and `SyntaxKind::is_word_piece` says which ones can be joined;
+//! the parser does the joining.
 
 use super::{Lexer, Mode, operator};
 use crate::tree::SyntaxKind;
 
-/// Whether a token of this kind, placed next to another, keeps one word going.
-pub(super) const fn continues_a_word(kind: SyntaxKind) -> bool {
-    matches!(
-        kind,
-        SyntaxKind::Text
-            | SyntaxKind::Escaped
-            | SyntaxKind::SingleQuoted
-            | SyntaxKind::DoubleQuote
-            | SyntaxKind::Dollar
-            | SyntaxKind::DollarName
-            | SyntaxKind::DollarSpecial
-            | SyntaxKind::DollarBrace
-            | SyntaxKind::DollarParen
-            | SyntaxKind::DollarParenParen
-            | SyntaxKind::Backtick
-            | SyntaxKind::Tilde
-            | SyntaxKind::ParamOp
-            | SyntaxKind::LBracket
-            | SyntaxKind::RBracket
-            | SyntaxKind::RBrace
-    )
-}
-
 /// Whether a character can sit inside a run of plain text.
 ///
-/// `}` and `]` break a run so that a `${...}` and a `${a[i]}` can end on one. Outside a parameter
-/// expansion that only means `a}b` arrives as two pieces of the same word, which is a distinction
-/// without a difference.
+/// `}` breaks a run so that a `${...}` can end on one. Outside a parameter expansion that only
+/// means `a}b` arrives as two pieces of the same word, which is a distinction without a difference.
+///
+/// `]` is not in here, because it is not always a terminator: `]]` is a single reserved word, and
+/// splitting it would leave the parser unable to see the end of a `[[ ... ]]`. Inside `${...}` it
+/// does end a run, and [`Lexer::plain_text`] adds it there.
 fn is_plain(ch: char) -> bool {
     !matches!(
         ch,
-        '\'' | '"' | '\\' | '$' | '`' | '}' | ']' | '\n' | ' ' | '\t' | '\r'
+        '\'' | '"' | '\\' | '$' | '`' | '}' | '\n' | ' ' | '\t' | '\r'
     ) && !operator::starts_one(ch)
 }
 
@@ -53,10 +33,7 @@ impl Lexer<'_> {
                 SyntaxKind::DoubleQuote
             }
             Some('\\') => self.escaped(),
-            Some('`') => {
-                self.cursor.bump();
-                SyntaxKind::Backtick
-            }
+            Some('`') => self.backtick(),
             Some('$') => self.dollar(),
             Some('~') if self.at_word_start => self.tilde(),
             _ => self.plain_text(),
@@ -73,10 +50,7 @@ impl Lexer<'_> {
                 SyntaxKind::DoubleQuote
             }
             Some('$') => self.dollar(),
-            Some('`') => {
-                self.cursor.bump();
-                SyntaxKind::Backtick
-            }
+            Some('`') => self.backtick(),
             // Inside double quotes a backslash escapes only these. Before anything else it is an
             // ordinary character, which is why `"\d"` is a backslash and a d.
             Some('\\') if matches!(self.cursor.peek_at(1), Some('$' | '`' | '"' | '\\' | '\n')) => {
@@ -89,6 +63,20 @@ impl Lexer<'_> {
                 SyntaxKind::Text
             }
         }
+    }
+
+    /// Either end of a `` `...` ``, which one being whichever it has to be.
+    ///
+    /// Like `$(...)`, the inside is ordinary shell even when the outside is quoted, so this opens
+    /// a mode rather than emitting a character and carrying on.
+    fn backtick(&mut self) -> SyntaxKind {
+        self.cursor.bump();
+        if self.mode() == Mode::Backtick {
+            self.pop_mode();
+        } else {
+            self.push_mode(Mode::Backtick);
+        }
+        SyntaxKind::Backtick
     }
 
     /// `'...'`, which has no interior structure at all — not even a backslash escape.
@@ -116,8 +104,10 @@ impl Lexer<'_> {
     }
 
     fn plain_text(&mut self) -> SyntaxKind {
+        let in_brace = matches!(self.mode(), Mode::Brace { .. });
         self.cursor.bump();
-        self.cursor.eat_while(is_plain);
+        self.cursor
+            .eat_while(|ch| is_plain(ch) && !(in_brace && ch == ']'));
         SyntaxKind::Text
     }
 }

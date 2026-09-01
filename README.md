@@ -13,8 +13,15 @@ highlighting and a formatter are all built on it.
 
 ## State
 
-Early. The tree, its builder, spans and the source index exist and are tested. There is no
-tokenizer yet, so nothing parses shell — see `PLAN.md` for the order the rest arrives in.
+Early. The tree and its builder, spans, the source index, and the tokenizer exist and are tested.
+The tokenizer handles quoting, escapes, every `$` form, and here-documents, and it accounts for
+every byte of oslo's 432-script corpus with nothing left unrecognised. There is no grammar yet, so
+nothing produces a tree from shell — see `PLAN.md` for the order the rest arrives in.
+
+```sh
+# lex a directory of real scripts and report what turns up
+RUNE_CORPUS=/path/to/scripts cargo test --test against_a_corpus -- --ignored --nocapture
+```
 
 ## Commands
 

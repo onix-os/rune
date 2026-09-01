@@ -17,12 +17,14 @@
 
 pub mod error;
 pub mod lex;
+pub mod parse;
 pub mod source;
 pub mod span;
 pub mod tree;
 
 pub use error::{Completeness, Error, Severity};
 pub use lex::{Lexed, lex};
+pub use parse::{Parsed, parse};
 pub use source::Source;
 pub use span::Span;
 pub use tree::{Builder, Element, Node, SyntaxKind, Token, Tree};
