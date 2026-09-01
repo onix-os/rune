@@ -112,6 +112,11 @@ impl<'a> Parser<'a> {
     }
 
     fn finish(mut self) -> Parsed {
+        // Trivia after the last thing the grammar wanted has still to reach the tree. Nothing asks
+        // for it — the rules stop as soon as they run out of tokens they can use — so a trailing
+        // comment, or the body of a here-document that ends the file, would be left behind and
+        // swept up as an error node by the builder.
+        self.skip_trivia();
         self.report_unclosed();
         Parsed {
             tree: self.builder.build(),

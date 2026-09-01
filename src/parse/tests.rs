@@ -277,6 +277,45 @@ fn one_mistake_is_one_message() {
     );
 }
 
+/// Nothing asks for trivia that trails the last command, so it has to be swept up deliberately.
+///
+/// The builder makes up for whatever the parser leaves behind, which meant these still
+/// reconstructed their source exactly while the text sat in an error node outside the tree.
+#[test]
+fn trailing_trivia_reaches_the_tree_rather_than_an_error_node() {
+    for source in [
+        "echo hi # a trailing comment",
+        "echo hi\n# a comment on its own\n",
+        "cat <<EOF\nbody\nEOF\n",
+        "cat <<EOF\nbody\nEOF",
+        "echo hi   ",
+        "echo hi\n\n\n",
+    ] {
+        let parsed = parse(source);
+        assert!(
+            parsed.is_clean(),
+            "{source:?} reported {:?}",
+            errors(source)
+        );
+        assert!(
+            !parsed.tree().root().has_errors(),
+            "{source:?} left an error node:\n{}",
+            parsed.tree().dump()
+        );
+        assert_eq!(parsed.tree().reconstruct(), source);
+    }
+}
+
+#[test]
+fn a_here_document_body_hangs_off_the_tree_not_the_end_of_it() {
+    let parsed = parse("cat <<EOF\nbody\nEOF\necho after\n");
+    assert!(parsed.is_clean());
+    assert!(!parsed.tree().root().has_errors());
+    let dump = parsed.tree().dump();
+    assert!(dump.contains("HeredocText"), "{dump}");
+    assert!(dump.contains("\"after\""), "{dump}");
+}
+
 #[test]
 fn a_prompt_can_tell_unfinished_from_wrong() {
     use crate::error::Completeness::{Complete, Invalid, Unfinished};
