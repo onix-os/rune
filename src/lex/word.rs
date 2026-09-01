@@ -83,8 +83,11 @@ impl Lexer<'_> {
     fn single_quoted(&mut self) -> SyntaxKind {
         self.cursor.bump();
         self.cursor.eat_while(|ch| ch != '\'');
-        // An unterminated quote runs to the end of the file. The parser is what complains.
-        self.cursor.eat_char('\'');
+        // An unterminated quote runs to the end of the file. Nothing in the token stream shows
+        // that, so it is noted here or not at all.
+        if !self.cursor.eat_char('\'') {
+            self.note_unclosed("'", self.token_start());
+        }
         SyntaxKind::SingleQuoted
     }
 

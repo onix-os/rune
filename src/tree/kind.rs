@@ -27,6 +27,8 @@ pub enum SyntaxKind {
     Escaped,
     /// A whole `'...'`, which has no interior structure.
     SingleQuoted,
+    /// A whole `$'...'`, in which backslash escapes are interpreted.
+    AnsiCQuoted,
     /// Either end of a `"..."`. Which end it is follows from where it sits.
     DoubleQuote,
     /// A `$` that expands nothing — the last character of a word, or before a space.
@@ -180,6 +182,7 @@ impl SyntaxKind {
             Self::Text
                 | Self::Escaped
                 | Self::SingleQuoted
+                | Self::AnsiCQuoted
                 | Self::DoubleQuote
                 | Self::Dollar
                 | Self::DollarName

@@ -14,6 +14,8 @@ pub(super) struct Heredoc {
     delimiter: String,
     /// `<<-`: leading tabs come off every line, the terminator included.
     strip_tabs: bool,
+    /// Where the `<<` is, so a body that never ends can point back at what asked for it.
+    at: u32,
 }
 
 /// Strip the quoting from a delimiter word.
@@ -35,7 +37,7 @@ fn unquote(raw: &str) -> (String, bool) {
 impl<'a> Lexer<'a> {
     /// Note that the word coming up names a here-document delimiter.
     pub(super) fn expect_delimiter(&mut self, strip_tabs: bool) {
-        self.awaiting_delimiter = Some(strip_tabs);
+        self.awaiting_delimiter = Some((strip_tabs, self.token_start()));
         self.delimiter_text.clear();
     }
 
@@ -60,7 +62,7 @@ impl<'a> Lexer<'a> {
     }
 
     pub(super) fn finish_delimiter(&mut self) {
-        let Some(strip_tabs) = self.awaiting_delimiter.take() else {
+        let Some((strip_tabs, at)) = self.awaiting_delimiter.take() else {
             return;
         };
         if self.delimiter_text.is_empty() {
@@ -71,6 +73,7 @@ impl<'a> Lexer<'a> {
         self.heredocs.push(Heredoc {
             delimiter,
             strip_tabs,
+            at,
         });
     }
 
@@ -86,8 +89,8 @@ impl<'a> Lexer<'a> {
         let body_start = self.cursor.offset();
         loop {
             if self.cursor.is_eof() {
-                // The file ended before the delimiter did. Everything left is body; the parser
-                // is what says so.
+                // The file ended before the delimiter did.
+                self.note_unclosed("<<", doc.at);
                 self.close_body(body_start, self.cursor.offset(), None);
                 return;
             }

@@ -25,7 +25,7 @@ pub mod tree;
 
 pub use ast::Script;
 pub use error::{Completeness, Error, Severity};
-pub use lex::{Lexed, lex};
+pub use lex::{Lexed, Lexing, Unclosed, lex};
 pub use parse::{Parsed, parse};
 pub use source::Source;
 pub use span::Span;

@@ -52,7 +52,7 @@ fn the_lexer_accounts_for_every_byte_of_real_shell() {
         bytes += text.len();
 
         let mut at = 0;
-        for token in lex(&text) {
+        for token in lex(&text).tokens {
             assert_ne!(
                 token.len,
                 0,

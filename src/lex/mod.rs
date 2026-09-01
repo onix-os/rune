@@ -25,8 +25,28 @@ pub struct Lexed {
     pub len: u32,
 }
 
+/// Something that was still open when the input ran out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unclosed {
+    /// What opened it, written the way it appears in the source.
+    pub opener: &'static str,
+    /// Where the opener starts.
+    pub at: u32,
+}
+
+/// Everything reading the text produced.
+#[derive(Debug, Clone, Default)]
+pub struct Lexing {
+    pub tokens: Vec<Lexed>,
+    /// Constructs left open at the end of the input, outermost first.
+    ///
+    /// An unterminated quote is invisible in the token stream — the run simply reaches the end —
+    /// so the only thing that can report one is the reader that was inside it.
+    pub unclosed: Vec<Unclosed>,
+}
+
 /// Split `text` into tokens whose lengths sum to its length.
-pub fn lex(text: &str) -> Vec<Lexed> {
+pub fn lex(text: &str) -> Lexing {
     Lexer::new(text).run()
 }
 
@@ -68,16 +88,34 @@ pub(crate) enum Mode {
     Backtick,
 }
 
+impl Mode {
+    /// What opens this mode, as it is written.
+    const fn opener(self) -> &'static str {
+        match self {
+            Self::Normal => "",
+            Self::DoubleQuoted => "\"",
+            Self::Brace { .. } => "${",
+            Self::Arithmetic { .. } => "$((",
+            Self::CommandSub { .. } => "$(",
+            Self::Backtick => "`",
+        }
+    }
+}
+
 pub(crate) struct Lexer<'a> {
     pub(crate) cursor: Cursor<'a>,
     text: &'a str,
     out: Vec<Lexed>,
-    modes: Vec<Mode>,
+    /// Each open mode, with where the token that opened it began.
+    modes: Vec<(Mode, u32)>,
+    /// Where the token being read starts, so a mode can record what opened it.
+    token_start: u32,
+    unclosed: Vec<Unclosed>,
     /// Bodies owed, to be read at the end of the line that asked for them.
     heredocs: Vec<Heredoc>,
     /// Set while the word naming a here-document delimiter is being collected; the flag inside is
     /// whether the operator was `<<-`.
-    awaiting_delimiter: Option<bool>,
+    awaiting_delimiter: Option<(bool, u32)>,
     delimiter_text: String,
     /// Whether the next token would start a word rather than continue one.
     ///
@@ -92,7 +130,9 @@ impl<'a> Lexer<'a> {
             cursor: Cursor::new(text),
             text,
             out: Vec::new(),
-            modes: vec![Mode::Normal],
+            modes: vec![(Mode::Normal, 0)],
+            token_start: 0,
+            unclosed: Vec::new(),
             heredocs: Vec::new(),
             awaiting_delimiter: None,
             delimiter_text: String::new(),
@@ -100,10 +140,11 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn run(mut self) -> Vec<Lexed> {
+    fn run(mut self) -> Lexing {
         let source: &'a str = self.text;
         while !self.cursor.is_eof() {
             let start = self.cursor.offset();
+            self.token_start = start;
             let mut kind = self.token();
             if self.cursor.offset() == start {
                 // A branch that consumed nothing would spin here forever. Take a character and
@@ -126,7 +167,18 @@ impl<'a> Lexer<'a> {
                 _ => {}
             }
         }
-        self.out
+        // Whatever is still on the stack was opened and never closed.
+        for (mode, at) in self.modes.iter().skip(1) {
+            self.unclosed.push(Unclosed {
+                opener: mode.opener(),
+                at: *at,
+            });
+        }
+        self.unclosed.sort_by_key(|open| open.at);
+        Lexing {
+            tokens: self.out,
+            unclosed: self.unclosed,
+        }
     }
 
     fn token(&mut self) -> SyntaxKind {
@@ -188,11 +240,21 @@ impl<'a> Lexer<'a> {
     }
 
     pub(crate) fn mode(&self) -> Mode {
-        self.modes.last().copied().unwrap_or(Mode::Normal)
+        self.modes.last().map_or(Mode::Normal, |(mode, _)| *mode)
     }
 
     pub(crate) fn push_mode(&mut self, mode: Mode) {
-        self.modes.push(mode);
+        self.modes.push((mode, self.token_start));
+    }
+
+    /// Record something that ran to the end of the input without being closed.
+    pub(crate) fn note_unclosed(&mut self, opener: &'static str, at: u32) {
+        self.unclosed.push(Unclosed { opener, at });
+    }
+
+    /// Where the token being read starts.
+    pub(crate) const fn token_start(&self) -> u32 {
+        self.token_start
     }
 
     /// Leave the innermost mode. The outermost cannot be left.
@@ -203,7 +265,7 @@ impl<'a> Lexer<'a> {
     }
 
     pub(crate) fn set_brace_stage(&mut self, stage: BraceStage) {
-        if let Some(Mode::Brace { stage: current }) = self.modes.last_mut() {
+        if let Some((Mode::Brace { stage: current }, _)) = self.modes.last_mut() {
             *current = stage;
         }
     }
@@ -216,13 +278,13 @@ impl<'a> Lexer<'a> {
     }
 
     pub(crate) fn bump_arith_depth(&mut self, by: i32) {
-        if let Some(Mode::Arithmetic { depth }) = self.modes.last_mut() {
+        if let Some((Mode::Arithmetic { depth }, _)) = self.modes.last_mut() {
             *depth = depth.saturating_add(by).max(0);
         }
     }
 
     pub(crate) fn bump_sub_depth(&mut self, by: i32) {
-        if let Some(Mode::CommandSub { depth }) = self.modes.last_mut() {
+        if let Some((Mode::CommandSub { depth }, _)) = self.modes.last_mut() {
             *depth = depth.saturating_add(by).max(0);
         }
     }

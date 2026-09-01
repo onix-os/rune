@@ -41,6 +41,8 @@ pub enum WordPiece<'a> {
     Literal(Span),
     /// `'…'` or a backslash escape — text that is protected.
     Quoted(Span),
+    /// `$'…'`, whose backslash escapes stand for other characters.
+    AnsiC(Span),
     /// A `"` opening or closing a run of protected text.
     DoubleQuote(Span),
     /// `$name` or `$?`.
@@ -88,7 +90,8 @@ impl<'a> Word<'a> {
     /// The word's value, if it is the same every time.
     ///
     /// Quoting is removed; anything that expands gives `None`, because the answer is not knowable
-    /// until it runs.
+    /// until it runs. `$'…'` also gives `None`: its value is fixed, but working it out means
+    /// interpreting escapes, and this does not pretend to.
     pub fn literal(self, source: &Source) -> Option<String> {
         let mut out = String::new();
         for piece in self.pieces() {
@@ -127,6 +130,7 @@ impl<'a> WordPiece<'a> {
         Some(match kind {
             SyntaxKind::Text => Self::Literal(span),
             SyntaxKind::SingleQuoted | SyntaxKind::Escaped => Self::Quoted(span),
+            SyntaxKind::AnsiCQuoted => Self::AnsiC(span),
             SyntaxKind::DoubleQuote => Self::DoubleQuote(span),
             SyntaxKind::DollarName | SyntaxKind::DollarSpecial => Self::Parameter(span),
             SyntaxKind::Tilde => Self::Tilde(span),

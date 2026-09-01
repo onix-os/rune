@@ -278,6 +278,58 @@ fn one_mistake_is_one_message() {
 }
 
 #[test]
+fn a_prompt_can_tell_unfinished_from_wrong() {
+    use crate::error::Completeness::{Complete, Invalid, Unfinished};
+
+    for (source, expected) in [
+        ("", Complete),
+        ("echo hi", Complete),
+        ("if a; then b; fi", Complete),
+        ("cat <<EOF\nbody\nEOF\n", Complete),
+        // Something is open and the next line will close it.
+        ("if a; then b", Unfinished),
+        ("while a; do b", Unfinished),
+        ("echo \"abc", Unfinished),
+        ("echo 'abc", Unfinished),
+        ("echo $(ls", Unfinished),
+        ("echo ${x", Unfinished),
+        ("echo `ls", Unfinished),
+        ("cat <<EOF\nbody\n", Unfinished),
+        ("a &&", Unfinished),
+        ("a |", Unfinished),
+        ("(a; b", Unfinished),
+        // Nothing will fix these by adding to the end.
+        ("done", Invalid),
+        ("echo )", Invalid),
+        ("fi", Invalid),
+    ] {
+        assert_eq!(
+            parse(source).completeness(),
+            expected,
+            "{source:?} was read as {:?}, reporting {:?}",
+            parse(source).completeness(),
+            errors(source)
+        );
+    }
+}
+
+#[test]
+fn an_unterminated_quote_is_reported_at_all() {
+    // Nothing in the token stream shows it: the word simply runs to the end of the file.
+    assert_eq!(errors("echo \"abc"), ["this `\"` was never closed"]);
+    assert_eq!(errors("echo 'abc"), ["this `'` was never closed"]);
+    let parsed = parse("echo 'abc");
+    assert_eq!(parsed.errors()[0].opened_at.map(|span| span.start), Some(5));
+}
+
+#[test]
+fn one_unclosed_construct_is_reported_once() {
+    // The rule and the lexer both notice `$(`; only one of them should speak.
+    assert_eq!(errors("echo $(ls"), ["this `$(` was never closed"]);
+    assert_eq!(errors("echo ${x"), ["this `${` was never closed"]);
+}
+
+#[test]
 fn an_unclosed_expansion_is_reported() {
     assert_eq!(errors("echo $(ls"), ["this `$(` was never closed"]);
     assert_eq!(errors("echo ${x"), ["this `${` was never closed"]);

@@ -5,7 +5,7 @@ use crate::tree::SyntaxKind;
 fn tokens(text: &str) -> Vec<(SyntaxKind, &str)> {
     let mut out = Vec::new();
     let mut at = 0;
-    for token in lex(text) {
+    for token in lex(text).tokens {
         let end = at + token.len as usize;
         out.push((token.kind, text.get(at..end).unwrap_or("<split>")));
         at = end;
@@ -14,7 +14,11 @@ fn tokens(text: &str) -> Vec<(SyntaxKind, &str)> {
 }
 
 fn kinds(text: &str) -> Vec<SyntaxKind> {
-    lex(text).into_iter().map(|token| token.kind).collect()
+    lex(text)
+        .tokens
+        .into_iter()
+        .map(|token| token.kind)
+        .collect()
 }
 
 /// Shell that has given lexers trouble, plus the ordinary cases.
@@ -37,6 +41,8 @@ const SCRIPTS: &[&str] = &[
     "cat <<A <<B\na\nA\nb\nB\n",
     "cat <<EOF | grep x\nbody\nEOF\n",
     "cat <<<'here string'",
+    "$'quote:\\' rest'",
+    "\"$'a'\"",
     "'single'",
     "'unterminated",
     "\"double\"",
@@ -81,7 +87,11 @@ const SCRIPTS: &[&str] = &[
 #[test]
 fn the_tokens_cover_the_whole_input() {
     for script in SCRIPTS {
-        let total: usize = lex(script).iter().map(|token| token.len as usize).sum();
+        let total: usize = lex(script)
+            .tokens
+            .iter()
+            .map(|token| token.len as usize)
+            .sum();
         assert_eq!(total, script.len(), "lengths do not add up for {script:?}");
     }
 }
@@ -89,7 +99,7 @@ fn the_tokens_cover_the_whole_input() {
 #[test]
 fn no_token_is_empty() {
     for script in SCRIPTS {
-        for token in lex(script) {
+        for token in lex(script).tokens {
             assert_ne!(token.len, 0, "a zero-length {:?} in {script:?}", token.kind);
         }
     }
@@ -99,7 +109,7 @@ fn no_token_is_empty() {
 fn every_token_lands_on_a_character_boundary() {
     for script in SCRIPTS {
         let mut at = 0;
-        for token in lex(script) {
+        for token in lex(script).tokens {
             at += token.len as usize;
             assert!(
                 script.is_char_boundary(at),
@@ -181,6 +191,43 @@ fn a_backslash_escapes_only_some_things_inside_double_quotes() {
             (SyntaxKind::DoubleQuote, "\""),
         ]
     );
+}
+
+#[test]
+fn ansi_c_quoting_lets_a_backslash_protect_the_closing_quote() {
+    assert_eq!(
+        tokens("$'quote:\\' rest'"),
+        [(SyntaxKind::AnsiCQuoted, "$'quote:\\' rest'")]
+    );
+    assert_eq!(tokens("$'a\\nb'"), [(SyntaxKind::AnsiCQuoted, "$'a\\nb'")]);
+}
+
+#[test]
+fn ansi_c_quoting_is_inert_inside_double_quotes() {
+    // `"$'a'"` is a dollar sign followed by a quoted `a`, not an ANSI-C string.
+    assert_eq!(
+        tokens("\"$'a'\""),
+        [
+            (SyntaxKind::DoubleQuote, "\""),
+            (SyntaxKind::Dollar, "$"),
+            (SyntaxKind::Text, "'a'"),
+            (SyntaxKind::DoubleQuote, "\""),
+        ]
+    );
+}
+
+#[test]
+fn what_was_left_open_at_the_end_is_reported() {
+    assert_eq!(lex("echo 'abc").unclosed.len(), 1);
+    assert_eq!(lex("echo 'abc").unclosed[0].opener, "'");
+    assert_eq!(lex("echo 'abc").unclosed[0].at, 5);
+    assert_eq!(lex("echo \"abc").unclosed[0].opener, "\"");
+    assert_eq!(lex("echo $(ls").unclosed[0].opener, "$(");
+    assert_eq!(lex("echo ${x").unclosed[0].opener, "${");
+    assert_eq!(lex("echo `ls").unclosed[0].opener, "`");
+    assert_eq!(lex("cat <<EOF\nbody\n").unclosed[0].opener, "<<");
+    assert_eq!(lex("$'abc").unclosed[0].opener, "$'");
+    assert!(lex("echo 'abc' \"d\" $(e) `f`").unclosed.is_empty());
 }
 
 #[test]

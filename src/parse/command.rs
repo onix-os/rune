@@ -1,6 +1,8 @@
 //! Lists, and-or chains, pipelines, and the simple command at the bottom of them.
 
 use super::Parser;
+use crate::error::Error;
+use crate::span::Span;
 use crate::tree::SyntaxKind;
 
 /// How deep the grammar will nest before it stops descending.
@@ -125,11 +127,31 @@ impl Parser<'_> {
         }
         self.start_at(start, SyntaxKind::AndOrList);
         while self.at(SyntaxKind::AndAnd) || self.at(SyntaxKind::PipePipe) {
+            let operator = self.position();
+            let text = self.peek_text(0);
             self.bump();
             self.skip_newlines();
+            self.dangling(operator, text);
             self.pipeline();
         }
         self.finish_node();
+    }
+
+    /// An operator with nothing after it: the line is unfinished, not wrong.
+    ///
+    /// A prompt needs this told apart from a real mistake, because the next line finishes it.
+    fn dangling(&mut self, at: u32, operator: &str) {
+        if !self.at_end() {
+            return;
+        }
+        let width = operator.len() as u32;
+        self.push_error(
+            Error::new(
+                Span::empty(self.position()),
+                format!("this `{operator}` has nothing after it"),
+            )
+            .opened_at(Span::new(at, at + width)),
+        );
     }
 
     /// `! time a | b`. Also only wrapped when there is something to wrap.
@@ -160,8 +182,11 @@ impl Parser<'_> {
 
     fn pipe_rest(&mut self) {
         while self.at(SyntaxKind::Pipe) || self.at(SyntaxKind::PipeAmp) {
+            let operator = self.position();
+            let text = self.peek_text(0);
             self.bump();
             self.skip_newlines();
+            self.dangling(operator, text);
             self.command();
         }
     }

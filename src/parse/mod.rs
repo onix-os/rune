@@ -13,8 +13,9 @@ mod compound;
 mod redirect;
 mod word;
 
+use crate::error::Completeness;
 use crate::error::Error;
-use crate::lex::{Lexed, lex};
+use crate::lex::{Lexed, Unclosed, lex};
 use crate::source::Source;
 use crate::span::Span;
 use crate::tree::{Builder, SyntaxKind, Tree};
@@ -39,6 +40,27 @@ impl Parsed {
     pub fn is_clean(&self) -> bool {
         self.errors.is_empty()
     }
+
+    /// Whether this is a whole program, an unfinished one, or not shell at all.
+    ///
+    /// The three-way answer is what an interactive prompt needs: run it, read another line, or
+    /// report it. What separates the last two is *where* the trouble is — a construct still open
+    /// when the input ran out will be finished by the next line; anything else will not.
+    pub fn completeness(&self) -> Completeness {
+        if self.errors.is_empty() {
+            return Completeness::Complete;
+        }
+        let end = self.tree.source().len();
+        let ran_out = self
+            .errors
+            .iter()
+            .all(|error| error.opened_at.is_some() && error.span.start >= end);
+        if ran_out {
+            Completeness::Unfinished
+        } else {
+            Completeness::Invalid
+        }
+    }
 }
 
 /// Parse `text`. This cannot fail; a file of nonsense produces a tree of error nodes and a list.
@@ -51,6 +73,8 @@ pub fn parse(text: &str) -> Parsed {
 pub(crate) struct Parser<'a> {
     text: &'a str,
     tokens: Vec<Lexed>,
+    /// What the lexer had open when the input ran out.
+    unclosed: Vec<Unclosed>,
     /// Where each token starts, so a rule can name a position without counting.
     starts: Vec<u32>,
     /// Index into `tokens`, trivia included.
@@ -65,17 +89,18 @@ pub(crate) struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn new(text: &'a str) -> Self {
-        let tokens = lex(text);
-        let mut starts = Vec::with_capacity(tokens.len() + 1);
+        let lexing = lex(text);
+        let mut starts = Vec::with_capacity(lexing.tokens.len() + 1);
         let mut at = 0;
-        for token in &tokens {
+        for token in &lexing.tokens {
             starts.push(at);
             at += token.len;
         }
         starts.push(at);
         Self {
             text,
-            tokens,
+            tokens: lexing.tokens,
+            unclosed: lexing.unclosed,
             starts,
             pos: 0,
             backticks: 0,
@@ -85,11 +110,39 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn finish(self) -> Parsed {
+    fn finish(mut self) -> Parsed {
+        self.report_unclosed();
         Parsed {
             tree: self.builder.build(),
             errors: self.errors,
         }
+    }
+
+    /// Turn what the lexer left open into errors, unless a rule already said so.
+    ///
+    /// An unterminated quote has no rule to catch it — the word simply runs to the end of the
+    /// file — so it can only be reported from here. The others usually have been, which is why
+    /// this checks before speaking twice about one mistake.
+    fn report_unclosed(&mut self) {
+        let end = self.starts.last().copied().unwrap_or_default();
+        for open in std::mem::take(&mut self.unclosed) {
+            let already = self
+                .errors
+                .iter()
+                .any(|error| error.opened_at.is_some_and(|span| span.start == open.at));
+            if already {
+                continue;
+            }
+            let width = open.opener.len() as u32;
+            self.errors.push(
+                Error::new(
+                    Span::empty(end),
+                    format!("this `{}` was never closed", open.opener),
+                )
+                .opened_at(Span::new(open.at, open.at + width)),
+            );
+        }
+        self.errors.sort_by_key(|error| error.span.start);
     }
 
     // ---- looking ----

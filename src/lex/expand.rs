@@ -49,6 +49,17 @@ impl Lexer<'_> {
                 self.push_mode(Mode::CommandSub { depth: 0 });
                 SyntaxKind::DollarParen
             }
+            // `$'...'` interprets backslash escapes, so `\'` does not end it. Inside double
+            // quotes it is inert — `"$'a'"` is a dollar sign and a quoted `a` — which is why this
+            // asks where it is.
+            Some('\'') if self.mode() != Mode::DoubleQuoted => self.ansi_c_quoted(),
+            // `$"..."` is a double-quoted string that gets translated. For reading it, the
+            // translation changes nothing.
+            Some('"') => {
+                self.cursor.bump();
+                self.push_mode(Mode::DoubleQuoted);
+                SyntaxKind::DoubleQuote
+            }
             Some('{') => {
                 self.cursor.bump();
                 self.push_mode(Mode::Brace {
@@ -67,6 +78,31 @@ impl Lexer<'_> {
             // A `$` before anything else is just a dollar sign: `echo 5$` prints `5$`.
             _ => SyntaxKind::Dollar,
         }
+    }
+
+    /// `$'...'`, whose backslash escapes protect the quote that would otherwise end it.
+    fn ansi_c_quoted(&mut self) -> SyntaxKind {
+        self.cursor.bump();
+        loop {
+            match self.cursor.peek() {
+                None => {
+                    self.note_unclosed("$'", self.token_start());
+                    break;
+                }
+                Some('\\') => {
+                    self.cursor.bump();
+                    self.cursor.bump();
+                }
+                Some('\'') => {
+                    self.cursor.bump();
+                    break;
+                }
+                _ => {
+                    self.cursor.bump();
+                }
+            }
+        }
+        SyntaxKind::AnsiCQuoted
     }
 
     /// A piece inside `${...}`.
@@ -160,7 +196,11 @@ mod tests {
     use crate::lex::lex;
 
     fn kinds(text: &str) -> Vec<SyntaxKind> {
-        lex(text).into_iter().map(|token| token.kind).collect()
+        lex(text)
+            .tokens
+            .into_iter()
+            .map(|token| token.kind)
+            .collect()
     }
 
     #[test]
