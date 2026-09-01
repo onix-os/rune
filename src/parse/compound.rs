@@ -41,13 +41,21 @@ impl Parser<'_> {
     }
 
     /// Report a construct that was opened and never closed.
-    fn unclosed(&mut self, opener: &str, opened_at: u32, expected: &[SyntaxKind]) {
-        let at = self.position();
-        self.push_error(
-            Error::new(Span::empty(at), format!("this `{opener}` was never closed"))
-                .expecting(expected.iter().copied())
-                .opened_at(Span::new(opened_at, opened_at + opener.len() as u32)),
-        );
+    ///
+    /// **Pointed at the opener.** The parser notices at the end of the body, which for an unclosed
+    /// block is the end of the file — and an error there says only that the script ran out, which
+    /// the reader can already see. The `if` that is still open is the thing to go and look at, so
+    /// that is what the span names.
+    pub(super) fn unclosed(&mut self, opener: &str, opened_at: u32, expected: &[SyntaxKind]) {
+        let span = Span::new(opened_at, opened_at + opener.len() as u32);
+        let mut error = Error::new(span, format!("this `{opener}` was never closed"))
+            .expecting(expected.iter().copied())
+            .opened_at(span);
+        // Ran out of input rather than met something it could not use: another line finishes it.
+        if self.at_end() {
+            error = error.unfinished();
+        }
+        self.push_error(error);
     }
 
     /// Take a reserved word, or report that it is missing without consuming anything.
@@ -88,6 +96,7 @@ impl Parser<'_> {
             self.finish_node();
         }
         self.expect_keyword(SyntaxKind::Fi, "if", opened_at);
+        self.trailing_redirects();
         self.finish_node();
     }
 
@@ -101,6 +110,7 @@ impl Parser<'_> {
             self.command_list_until(&[]);
             self.expect_keyword(SyntaxKind::Done, opener, opened_at);
         }
+        self.trailing_redirects();
         self.finish_node();
     }
 
@@ -126,6 +136,7 @@ impl Parser<'_> {
             self.command_list_until(&[]);
             self.expect_keyword(SyntaxKind::Done, "for", opened_at);
         }
+        self.trailing_redirects();
         self.finish_node();
     }
 
@@ -149,6 +160,7 @@ impl Parser<'_> {
             self.command_list_until(&[]);
             self.expect_keyword(SyntaxKind::Done, "select", opened_at);
         }
+        self.trailing_redirects();
         self.finish_node();
     }
 
@@ -162,6 +174,7 @@ impl Parser<'_> {
             self.command_list_until(&[]);
             self.expect_keyword(SyntaxKind::Done, "for", opened_at);
         }
+        self.trailing_redirects();
         self.finish_node();
     }
 
@@ -178,6 +191,7 @@ impl Parser<'_> {
         self.bump_as(SyntaxKind::LBrace);
         self.command_list_until(&[]);
         self.expect_keyword(SyntaxKind::RBrace, "{", opened_at);
+        self.trailing_redirects();
         self.finish_node();
     }
 
@@ -185,10 +199,13 @@ impl Parser<'_> {
         let opened_at = self.position();
         self.start(SyntaxKind::Subshell);
         self.bump();
+        self.push_guard(SyntaxKind::RParen);
         self.command_list_until(&[SyntaxKind::RParen]);
+        self.pop_guard();
         if !self.eat(SyntaxKind::RParen) {
             self.unclosed("(", opened_at, &[SyntaxKind::RParen]);
         }
+        self.trailing_redirects();
         self.finish_node();
     }
 
@@ -196,6 +213,7 @@ impl Parser<'_> {
     fn arith_command(&mut self) {
         self.start(SyntaxKind::ArithCommand);
         self.take_double_parens();
+        self.trailing_redirects();
         self.finish_node();
     }
 
@@ -244,6 +262,7 @@ impl Parser<'_> {
             self.skip_newlines();
         }
         self.expect_keyword(SyntaxKind::Esac, "case", opened_at);
+        self.trailing_redirects();
         self.finish_node();
     }
 

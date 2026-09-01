@@ -277,6 +277,129 @@ fn one_mistake_is_one_message() {
     );
 }
 
+/// Nothing asks for trivia that trails the last command, so it has to be swept up deliberately.
+///
+/// The builder makes up for whatever the parser leaves behind, which meant these still
+/// reconstructed their source exactly while the text sat in an error node outside the tree.
+#[test]
+fn trailing_trivia_reaches_the_tree_rather_than_an_error_node() {
+    for source in [
+        "echo hi # a trailing comment",
+        "echo hi\n# a comment on its own\n",
+        "cat <<EOF\nbody\nEOF\n",
+        "cat <<EOF\nbody\nEOF",
+        "echo hi   ",
+        "echo hi\n\n\n",
+    ] {
+        let parsed = parse(source);
+        assert!(
+            parsed.is_clean(),
+            "{source:?} reported {:?}",
+            errors(source)
+        );
+        assert!(
+            !parsed.tree().root().has_errors(),
+            "{source:?} left an error node:\n{}",
+            parsed.tree().dump()
+        );
+        assert_eq!(parsed.tree().reconstruct(), source);
+    }
+}
+
+#[test]
+fn a_here_document_body_hangs_off_the_tree_not_the_end_of_it() {
+    let parsed = parse("cat <<EOF\nbody\nEOF\necho after\n");
+    assert!(parsed.is_clean());
+    assert!(!parsed.tree().root().has_errors());
+    let dump = parsed.tree().dump();
+    assert!(dump.contains("HeredocText"), "{dump}");
+    assert!(dump.contains("\"after\""), "{dump}");
+}
+
+/// A redirection after a compound command belongs to it, not to the statement after it.
+///
+/// `{ …; } 2>&1 | sort` reads stderr into the pipe. Left as a statement of its own, the
+/// redirection did nothing and the stream went to the terminal instead.
+#[test]
+fn a_compound_command_takes_its_trailing_redirections() {
+    for source in [
+        "{ echo a; } 2>&1",
+        "( echo a ) > log",
+        "if a; then b; fi > log",
+        "while a; do b; done < in",
+        "for i in a; do b; done >> log",
+        "case x in a) b;; esac 2> err",
+        "[[ -f x ]] > log",
+        "(( 1 + 1 )) > log",
+    ] {
+        let parsed = parse(source);
+        assert!(
+            parsed.is_clean(),
+            "{source:?} reported {:?}",
+            errors(source)
+        );
+        let dump = parsed.tree().dump();
+        // One *top-level* statement, with the redirection inside the construct rather than
+        // beside it. Statements nested in the body do not count, so the depth is what is read.
+        let statements = dump
+            .lines()
+            .filter(|line| line.starts_with("    ListItem@"))
+            .count();
+        assert_eq!(
+            statements, 1,
+            "{source:?} became more than one statement:\n{dump}"
+        );
+        assert!(dump.contains("Redirect@"), "{source:?}:\n{dump}");
+    }
+}
+
+/// An unclosed construct is reported *at the construct*, not at the end of the file.
+///
+/// The parser finds out at the end, because that is where it runs out of input looking for the
+/// closer — but "the script ended" is the one thing the reader can already see. The `if` on line 2
+/// is what they have to go and look at.
+#[test]
+fn an_unclosed_construct_is_reported_where_it_opened() {
+    let source = "#!/bin/sh\nif [ -f x ]; then\n  echo found\n\nfor f in *; do\n  echo \"$f\"\n\necho 'unterminated\n\necho done\n";
+    let parsed = parse(source);
+    let at = |error: &crate::error::Error| parsed.tree().source().line_col(error.span.start);
+
+    let found: Vec<_> = parsed
+        .errors()
+        .iter()
+        .map(|error| (at(error).0, error.message.as_str()))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (2, "this `if` was never closed"),
+            (5, "this `for` was never closed"),
+            (8, "this `'` was never closed"),
+        ],
+        "each error belongs on the line that opened it"
+    );
+
+    // And every one of them is something another line would finish.
+    assert!(parsed.errors().iter().all(|error| error.unfinished));
+}
+
+/// A mistake that no amount of further input would fix keeps `unfinished` off.
+#[test]
+fn a_stray_word_is_not_something_another_line_finishes() {
+    let parsed = parse("echo one\ndone\n");
+    assert_eq!(parsed.errors().len(), 1);
+    assert!(!parsed.errors()[0].unfinished);
+    // Reported where it is, because that is where the mistake is.
+    assert_eq!(
+        parsed
+            .tree()
+            .source()
+            .line_col(parsed.errors()[0].span.start)
+            .0,
+        2
+    );
+}
+
 #[test]
 fn a_prompt_can_tell_unfinished_from_wrong() {
     use crate::error::Completeness::{Complete, Invalid, Unfinished};
@@ -328,15 +451,9 @@ fn one_unclosed_construct_is_reported_once() {
     assert_eq!(errors("echo $(ls"), ["this `$(` was never closed"]);
     assert_eq!(errors("echo ${x"), ["this `${` was never closed"]);
     // An `if` with no `then` used to be reported once for the `then` and again for the `fi`.
-    assert_eq!(
-        errors("echo $(if)"),
-        [
-            "this is not something a command can start with",
-            // Both are reported at the end of the input, innermost first.
-            "this `if` was never closed",
-            "this `$(` was never closed",
-        ]
-    );
+    // Recovery also used to swallow the `)`, so the substitution around it looked unclosed too and
+    // one broken word became three messages about the whole file.
+    assert_eq!(errors("echo $(if)"), ["this `if` was never closed"]);
     assert_eq!(errors("while a").len(), 1);
     assert_eq!(errors("for i in a").len(), 1);
     assert_eq!(errors("case $x").len(), 1);

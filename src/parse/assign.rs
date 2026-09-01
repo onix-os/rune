@@ -16,8 +16,15 @@ fn split_assignment(text: &str) -> Option<(u32, u32, SyntaxKind)> {
     if !(first.is_alphabetic() || first == '_') {
         return None;
     }
+    // `a[i]=x` assigns to one element, and the subscript can hold anything arithmetic — so what is
+    // between the brackets is skipped rather than checked. Without this the `[` ended the name and
+    // `b[3]=z` was read as the name of a command to run.
+    let mut subscript = 0u32;
     for (at, ch) in chars {
         match ch {
+            '[' => subscript += 1,
+            ']' if subscript > 0 => subscript -= 1,
+            _ if subscript > 0 => {}
             '=' => return Some((at as u32, 1, SyntaxKind::Equal)),
             '+' if text.get(at + 1..).is_some_and(|rest| rest.starts_with('=')) => {
                 return Some((at as u32, 2, SyntaxKind::PlusEqual));
@@ -152,6 +159,21 @@ mod tests {
             Some((1, 2, SyntaxKind::PlusEqual))
         );
         assert_eq!(split_assignment("_a1=y"), Some((3, 1, SyntaxKind::Equal)));
+    }
+
+    #[test]
+    fn an_element_assignment_keeps_its_subscript_in_the_name() {
+        assert_eq!(split_assignment("b[3]=z"), Some((4, 1, SyntaxKind::Equal)));
+        assert_eq!(
+            split_assignment("b[i+1]=z"),
+            Some((6, 1, SyntaxKind::Equal))
+        );
+        assert_eq!(
+            split_assignment("b[@]+=z"),
+            Some((4, 2, SyntaxKind::PlusEqual))
+        );
+        // A subscript is not a licence to be anything: the name still has to be one.
+        assert_eq!(split_assignment("1[0]=z"), None);
     }
 
     #[test]

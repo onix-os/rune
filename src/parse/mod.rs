@@ -51,15 +51,11 @@ impl Parsed {
         if self.errors.is_empty() {
             return Completeness::Complete;
         }
-        let end = self.tree.source().len();
-        let ran_out = self
-            .errors
-            .iter()
-            .all(|error| error.opened_at.is_some() && error.span.start >= end);
-        if ran_out {
-            Completeness::Unfinished
-        } else {
-            Completeness::Invalid
+        // Every error has to be one another line would finish. One that would not — a `done` with
+        // no `do` — makes the whole thing wrong however much more is typed.
+        match self.errors.iter().all(|error| error.unfinished) {
+            true => Completeness::Unfinished,
+            false => Completeness::Invalid,
         }
     }
 }
@@ -82,6 +78,8 @@ pub(crate) struct Parser<'a> {
     pos: usize,
     /// How many backtick substitutions are open, so a closing `` ` `` is not read as an opening one.
     backticks: u32,
+    /// Tokens that close something we are nested inside, which recovery must not step over.
+    guards: Vec<SyntaxKind>,
     /// How many rules are on the stack, so nesting can be stopped before the stack is.
     depth: u32,
     builder: Builder,
@@ -105,6 +103,7 @@ impl<'a> Parser<'a> {
             starts,
             pos: 0,
             backticks: 0,
+            guards: Vec::new(),
             depth: 0,
             builder: Builder::new(Source::new(text), SyntaxKind::Script),
             errors: Vec::new(),
@@ -112,6 +111,11 @@ impl<'a> Parser<'a> {
     }
 
     fn finish(mut self) -> Parsed {
+        // Trivia after the last thing the grammar wanted has still to reach the tree. Nothing asks
+        // for it — the rules stop as soon as they run out of tokens they can use — so a trailing
+        // comment, or the body of a here-document that ends the file, would be left behind and
+        // swept up as an error node by the builder.
+        self.skip_trivia();
         self.report_unclosed();
         Parsed {
             tree: self.builder.build(),
@@ -125,7 +129,6 @@ impl<'a> Parser<'a> {
     /// file — so it can only be reported from here. The others usually have been, which is why
     /// this checks before speaking twice about one mistake.
     fn report_unclosed(&mut self) {
-        let end = self.starts.last().copied().unwrap_or_default();
         for open in std::mem::take(&mut self.unclosed) {
             let already = self
                 .errors
@@ -137,10 +140,13 @@ impl<'a> Parser<'a> {
             let width = open.opener.len() as u32;
             self.errors.push(
                 Error::new(
-                    Span::empty(end),
+                    Span::new(open.at, open.at + width),
                     format!("this `{}` was never closed", open.opener),
                 )
-                .opened_at(Span::new(open.at, open.at + width)),
+                .opened_at(Span::new(open.at, open.at + width))
+                // The reader ran to the end of the input looking for the closer, so another line
+                // is exactly what would finish it.
+                .unfinished(),
             );
         }
         self.errors.sort_by_key(|error| error.span.start);
@@ -237,6 +243,24 @@ impl<'a> Parser<'a> {
     /// How far the parser has got. A rule that returns without changing this made no progress.
     pub(crate) const fn progress(&self) -> usize {
         self.pos
+    }
+
+    /// Note a token that closes an enclosing construct, so that recovery stops before it.
+    ///
+    /// Without this, a body that does not parse takes the bracket around it down too: the `)` in
+    /// `$(if)` was swallowed while recovering from the `if`, leaving the substitution looking as
+    /// though it had never been closed and the whole file unparseable rather than one word of it.
+    pub(crate) fn push_guard(&mut self, kind: SyntaxKind) {
+        self.guards.push(kind);
+    }
+
+    pub(crate) fn pop_guard(&mut self) {
+        self.guards.pop();
+    }
+
+    /// Whether the next token closes something we are inside.
+    pub(crate) fn at_guard(&self) -> bool {
+        self.peek().is_some_and(|kind| self.guards.contains(&kind))
     }
 
     /// Whether a `` ` `` here would be closing a substitution rather than opening one.

@@ -114,6 +114,18 @@ fn the_parser_covers_every_byte_and_says_what_it_could_not_read() {
             path.display()
         );
 
+        // Reconstruction alone is too weak a check. The builder makes up for anything the parser
+        // failed to account for by sweeping it into an error node, so a script whose tokens were
+        // silently abandoned still reproduces its source perfectly — which is how a here-document
+        // body that ended a file went unnoticed while landing outside the tree entirely.
+        if parsed.is_clean() {
+            assert!(
+                !parsed.tree().root().has_errors(),
+                "{} parsed with nothing to report but left an error node in the tree",
+                path.display()
+            );
+        }
+
         if parsed.is_clean() {
             clean += 1;
         } else {

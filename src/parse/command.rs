@@ -44,13 +44,14 @@ impl Parser<'_> {
     /// that cries wolf is a report that gets turned off.
     fn recover(&mut self, closers: &[SyntaxKind]) {
         self.start(SyntaxKind::Error);
-        if !self.at_end() {
+        if !self.at_end() && !self.at_guard() {
             self.bump();
         }
         while !self.at_end()
             && !self.at_any(closers)
             && !self.at_any(&SEPARATORS)
             && !self.at_list_end()
+            && !self.at_guard()
         {
             self.bump();
         }
@@ -73,7 +74,7 @@ impl Parser<'_> {
             while self.at(SyntaxKind::Newline) && !closers.contains(&SyntaxKind::Newline) {
                 self.bump();
             }
-            if self.at_end() || self.at_any(closers) || self.at_list_end() {
+            if self.at_end() || self.at_any(closers) || self.at_list_end() || self.at_guard() {
                 break;
             }
             let before = self.progress();
@@ -147,26 +148,36 @@ impl Parser<'_> {
         let width = operator.len() as u32;
         self.push_error(
             Error::new(
-                Span::empty(self.position()),
+                Span::new(at, at + width),
                 format!("this `{operator}` has nothing after it"),
             )
-            .opened_at(Span::new(at, at + width)),
+            .unfinished(),
         );
     }
 
     /// `! time a | b`. Also only wrapped when there is something to wrap.
+    ///
+    /// The two prefixes come in either order — `time ! false` is as good as `! time false` — and
+    /// each at most once, which is what stops `! !` from being read as a doubly negated nothing.
     fn pipeline(&mut self) {
         let start = self.checkpoint();
-        let negated = self.at_word_exactly("!");
-        let timed = self.at_word_exactly("time");
+        let mut negated = false;
+        let mut timed = false;
+        loop {
+            if !negated && self.at_word_exactly("!") {
+                self.bump_as(SyntaxKind::Bang);
+                negated = true;
+                continue;
+            }
+            if !timed && self.at_word_exactly("time") {
+                self.bump_as(SyntaxKind::Time);
+                timed = true;
+                continue;
+            }
+            break;
+        }
         if negated || timed {
             self.start_at(start, SyntaxKind::Pipeline);
-            if negated {
-                self.bump_as(SyntaxKind::Bang);
-            }
-            if self.at_word_exactly("time") {
-                self.bump_as(SyntaxKind::Time);
-            }
             self.command();
             self.pipe_rest();
             self.finish_node();
@@ -199,6 +210,17 @@ impl Parser<'_> {
 
     /// One command: compound, a function definition, or a simple command.
     pub(super) fn command(&mut self) {
+        // A `!` is a reserved word only at the head of a pipeline, and [`Parser::pipeline`] has
+        // already taken it if that is where it was. One reaching here is misplaced — accepting it
+        // would turn `echo a | ! grep -q a` into a search for a command named `!`, which is a
+        // plausible 127 in place of the syntax error the line actually is.
+        if self.at_word_exactly("!") {
+            self.error("`!` can only negate a whole pipeline, and only at its head");
+            self.start(SyntaxKind::Error);
+            self.bump();
+            self.finish_node();
+            return;
+        }
         if self.compound_command() {
             return;
         }

@@ -28,6 +28,21 @@ impl Parser<'_> {
             .is_some_and(|next| next.kind.is_redirect_operator())
     }
 
+    /// The redirections written after a compound command, as in `while …; done > log`.
+    ///
+    /// They belong to the construct they follow, so they are taken *inside* its node rather than
+    /// left to look like a statement of their own — which is what `} 2>&1` would otherwise be, and
+    /// then the stream it was redirecting went to the terminal instead of down the pipe.
+    pub(super) fn trailing_redirects(&mut self) {
+        while self.at_redirect() {
+            let before = self.progress();
+            self.redirect();
+            if self.progress() == before {
+                return;
+            }
+        }
+    }
+
     pub(super) fn redirect(&mut self) {
         self.start(SyntaxKind::Redirect);
         if self.at_fd_prefix() {

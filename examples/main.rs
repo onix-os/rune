@@ -42,7 +42,11 @@ fn main() {
     for error in parsed.errors() {
         let (line, column) = source.line_col(error.span.start);
         println!("  {line}:{column}: {}", error.message);
-        if let Some(opened) = error.opened_at {
+        // Only when it says something the span does not: an unclosed construct is reported *at*
+        // its opener, so repeating the position under it would be noise.
+        if let Some(opened) = error.opened_at
+            && opened.start != error.span.start
+        {
             let (line, column) = source.line_col(opened.start);
             println!("      opened at {line}:{column}");
         }

@@ -22,15 +22,26 @@ pub enum Severity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
     /// What to point at.
+    ///
+    /// For a construct that was never closed this is the **opener**, not the end of the file. A
+    /// missing `fi` reported at the last line of a script says only that the script ended, which
+    /// is the one thing the reader already knew; the `if` on line 2 is the thing to go and look at.
     pub span: Span,
     pub message: String,
     /// What would have been accepted here, if the parser knows.
     pub expected: Vec<SyntaxKind>,
     /// Where the construct that ran unfinished began.
     ///
-    /// A missing `fi` is reported at the end of the file, which is useless on its own — the line
-    /// worth showing is the `if` that is still open. Diagnostics render this as a second label.
+    /// Kept for a report that wants a second label. It agrees with [`Error::span`] for the
+    /// unclosed-construct errors, where the opener is also the place to point.
     pub opened_at: Option<Span>,
+    /// Whether the input ran out while this was still open.
+    ///
+    /// **Recorded rather than inferred from the position.** An interactive prompt decides between
+    /// reading another line and reporting a mistake on exactly this question, and it used to be
+    /// answered by asking whether the error sat at the end of the input — which stopped being true
+    /// the moment the errors started pointing at the construct instead.
+    pub unfinished: bool,
     pub severity: Severity,
 }
 
@@ -41,8 +52,15 @@ impl Error {
             message: message.into(),
             expected: Vec::new(),
             opened_at: None,
+            unfinished: false,
             severity: Severity::Error,
         }
+    }
+
+    /// Mark this as something another line of input would finish.
+    pub fn unfinished(mut self) -> Self {
+        self.unfinished = true;
+        self
     }
 
     pub fn expecting(mut self, expected: impl IntoIterator<Item = SyntaxKind>) -> Self {
