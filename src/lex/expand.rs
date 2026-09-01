@@ -10,8 +10,22 @@ use crate::tree::SyntaxKind;
 /// The parameters whose names are punctuation, and so end after one character.
 const SPECIAL: &str = "?$!#*@-_0123456789";
 
-/// The characters that make up an operator inside `${...}`.
-const PARAM_OP: &str = ":-=?+#%/^,";
+/// The operators that can follow a parameter name, longest match first.
+///
+/// A run of the characters would not do: the operator in `${x:-/tmp}` is `:-`, and `/tmp` is the
+/// default value, not more operator.
+const PARAM_OPS: &[&str] = &[
+    ":-", ":=", ":?", ":+", "##", "%%", "//", "/#", "/%", "^^", ",,", ":", "-", "=", "?", "+", "#",
+    "%", "/", "^", ",",
+];
+
+/// Whether a character could begin one of [`PARAM_OPS`].
+fn starts_param_op(ch: char) -> bool {
+    matches!(
+        ch,
+        ':' | '-' | '=' | '?' | '+' | '#' | '%' | '/' | '^' | ','
+    )
+}
 
 fn is_name_start(ch: char) -> bool {
     ch.is_alphabetic() || ch == '_'
@@ -68,20 +82,30 @@ impl Lexer<'_> {
             }
             Some('[') if stage == BraceStage::Name => {
                 self.cursor.bump();
+                self.set_brace_stage(BraceStage::Subscript);
                 SyntaxKind::LBracket
             }
-            Some(']') if stage == BraceStage::Name => {
+            Some(']') if stage == BraceStage::Subscript => {
                 self.cursor.bump();
+                self.set_brace_stage(BraceStage::Name);
                 SyntaxKind::RBracket
             }
-            Some(ch) if stage != BraceStage::Operand && PARAM_OP.contains(ch) => {
-                self.cursor.eat_while(|ch| PARAM_OP.contains(ch));
+            Some(ch)
+                if matches!(stage, BraceStage::Start | BraceStage::Name) && starts_param_op(ch) =>
+            {
+                for operator in PARAM_OPS {
+                    if self.cursor.eat(operator) {
+                        break;
+                    }
+                }
                 self.set_brace_stage(BraceStage::Operand);
                 SyntaxKind::ParamOp
             }
             Some(ch) if stage != BraceStage::Operand && is_name(ch) => {
                 self.cursor.eat_while(is_name);
-                self.set_brace_stage(BraceStage::Name);
+                if stage != BraceStage::Subscript {
+                    self.set_brace_stage(BraceStage::Name);
+                }
                 SyntaxKind::Text
             }
             // Past the operator the rest is an ordinary word, and can hold anything a word can.
@@ -141,5 +165,21 @@ mod tests {
     #[test]
     fn a_name_stops_where_it_stops() {
         assert_eq!(kinds("$a-b"), [SyntaxKind::DollarName, SyntaxKind::Text]);
+    }
+
+    #[test]
+    fn every_parameter_operator_is_reachable() {
+        for operator in PARAM_OPS {
+            let first = operator.chars().next().expect("no operator is empty");
+            assert!(starts_param_op(first), "{operator} cannot be reached");
+        }
+        for (index, operator) in PARAM_OPS.iter().enumerate() {
+            for earlier in &PARAM_OPS[..index] {
+                assert!(
+                    !operator.starts_with(earlier),
+                    "{operator} is unreachable: {earlier} matches first"
+                );
+            }
+        }
     }
 }

@@ -64,6 +64,20 @@ impl<'a> Cursor<'a> {
         false
     }
 
+    /// Move forward by a byte count that is already known to land on a boundary.
+    pub(crate) fn advance(&mut self, bytes: usize) {
+        self.offset = (self.offset + bytes).min(self.text.len());
+    }
+
+    /// The rest of the line under the cursor, including its newline if it has one.
+    pub(crate) fn line(&self) -> &'a str {
+        let rest = self.rest();
+        match rest.find('\n') {
+            Some(at) => rest.get(..=at).unwrap_or(rest),
+            None => rest,
+        }
+    }
+
     /// Move past every character the predicate accepts.
     pub(crate) fn eat_while(&mut self, accept: impl Fn(char) -> bool) {
         while self.peek().is_some_and(&accept) {

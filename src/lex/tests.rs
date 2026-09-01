@@ -30,7 +30,12 @@ const SCRIPTS: &[&str] = &[
     "a ;; b ;& c ;;& d",
     "cmd >out 2>&1 <in >>app <>rw >|clob &>both &>>more",
     "cat <<EOF\nbody\nEOF",
-    "cat <<-EOF\n\tbody\nEOF",
+    "cat <<EOF\nbody\n",
+    "cat <<-EOF\n\tbody\n\tEOF\n",
+    "cat <<'EOF'\n$x\nEOF\n",
+    "cat << EOF\nx\nEOF\n",
+    "cat <<A <<B\na\nA\nb\nB\n",
+    "cat <<EOF | grep x\nbody\nEOF\n",
     "cat <<<'here string'",
     "'single'",
     "'unterminated",
@@ -230,6 +235,28 @@ fn an_operator_before_the_name_is_told_from_one_after_it() {
 }
 
 #[test]
+fn an_operator_stops_where_the_operand_begins() {
+    assert_eq!(
+        tokens("${x:-/tmp}"),
+        [
+            (SyntaxKind::DollarBrace, "${"),
+            (SyntaxKind::Text, "x"),
+            (SyntaxKind::ParamOp, ":-"),
+            (SyntaxKind::Text, "/tmp"),
+            (SyntaxKind::RBrace, "}"),
+        ]
+    );
+    assert_eq!(
+        tokens("${x//a/b}").get(2),
+        Some(&(SyntaxKind::ParamOp, "//"))
+    );
+    assert_eq!(
+        tokens("${x/#a/b}").get(2),
+        Some(&(SyntaxKind::ParamOp, "/#"))
+    );
+}
+
+#[test]
 fn a_subscript_is_its_own_pair() {
     assert_eq!(
         tokens("${a[0]}"),
@@ -238,6 +265,35 @@ fn a_subscript_is_its_own_pair() {
             (SyntaxKind::Text, "a"),
             (SyntaxKind::LBracket, "["),
             (SyntaxKind::Text, "0"),
+            (SyntaxKind::RBracket, "]"),
+            (SyntaxKind::RBrace, "}"),
+        ]
+    );
+    // A subscript is arithmetic, so its `-` and `+` are not operators on the parameter.
+    assert_eq!(
+        tokens("${h[i+1]}"),
+        [
+            (SyntaxKind::DollarBrace, "${"),
+            (SyntaxKind::Text, "h"),
+            (SyntaxKind::LBracket, "["),
+            (SyntaxKind::Text, "i"),
+            (SyntaxKind::Text, "+1"),
+            (SyntaxKind::RBracket, "]"),
+            (SyntaxKind::RBrace, "}"),
+        ]
+    );
+    assert_eq!(
+        tokens("${h[-1]}").get(4),
+        Some(&(SyntaxKind::RBracket, "]"))
+    );
+    // `@` is not a name, so the run that reads it must still stop at the bracket.
+    assert_eq!(
+        tokens("${a[@]}"),
+        [
+            (SyntaxKind::DollarBrace, "${"),
+            (SyntaxKind::Text, "a"),
+            (SyntaxKind::LBracket, "["),
+            (SyntaxKind::Text, "@"),
             (SyntaxKind::RBracket, "]"),
             (SyntaxKind::RBrace, "}"),
         ]
@@ -304,6 +360,98 @@ fn a_tilde_only_counts_at_the_start_of_a_word() {
     );
     assert_eq!(tokens("~user"), [(SyntaxKind::Tilde, "~user")]);
     assert_eq!(tokens("a~b"), [(SyntaxKind::Text, "a~b")]);
+}
+
+#[test]
+fn a_here_document_body_starts_on_the_next_line() {
+    assert_eq!(
+        tokens("cat <<EOF\nbody\nEOF\n"),
+        [
+            (SyntaxKind::Text, "cat"),
+            (SyntaxKind::Whitespace, " "),
+            (SyntaxKind::LessLess, "<<"),
+            (SyntaxKind::Text, "EOF"),
+            (SyntaxKind::Newline, "\n"),
+            (SyntaxKind::HeredocText, "body\n"),
+            (SyntaxKind::HeredocEnd, "EOF\n"),
+        ]
+    );
+}
+
+#[test]
+fn a_dash_strips_tabs_before_the_terminator() {
+    assert_eq!(
+        tokens("cat <<-EOF\n\tbody\n\tEOF\n").split_at(5).1,
+        [
+            (SyntaxKind::HeredocText, "\tbody\n"),
+            (SyntaxKind::HeredocEnd, "\tEOF\n"),
+        ]
+    );
+    // Without the dash the same terminator does not close it.
+    assert_eq!(
+        tokens("cat <<EOF\n\tEOF\n").split_at(5).1,
+        [(SyntaxKind::HeredocText, "\tEOF\n")]
+    );
+}
+
+#[test]
+fn a_quoted_delimiter_still_closes_the_body() {
+    assert_eq!(
+        tokens("cat <<'EOF'\n$x\nEOF\n").split_at(5).1,
+        [
+            (SyntaxKind::HeredocText, "$x\n"),
+            (SyntaxKind::HeredocEnd, "EOF\n"),
+        ]
+    );
+}
+
+#[test]
+fn a_space_before_the_delimiter_is_allowed() {
+    assert_eq!(
+        tokens("cat << EOF\nx\nEOF\n").split_at(6).1,
+        [
+            (SyntaxKind::HeredocText, "x\n"),
+            (SyntaxKind::HeredocEnd, "EOF\n"),
+        ]
+    );
+}
+
+#[test]
+fn two_here_documents_on_one_line_take_their_bodies_in_order() {
+    let all = tokens("cat <<A <<B\na\nA\nb\nB\n");
+    assert_eq!(
+        all.split_at(8).1,
+        [
+            (SyntaxKind::HeredocText, "a\n"),
+            (SyntaxKind::HeredocEnd, "A\n"),
+            (SyntaxKind::HeredocText, "b\n"),
+            (SyntaxKind::HeredocEnd, "B\n"),
+        ]
+    );
+}
+
+#[test]
+fn an_unterminated_body_runs_to_the_end_of_the_file() {
+    assert_eq!(
+        tokens("cat <<EOF\nbody\n").split_at(5).1,
+        [(SyntaxKind::HeredocText, "body\n")]
+    );
+}
+
+#[test]
+fn a_here_string_is_not_a_here_document() {
+    assert_eq!(
+        tokens("cat <<<word\nnext\n"),
+        [
+            (SyntaxKind::Text, "cat"),
+            (SyntaxKind::Whitespace, " "),
+            (SyntaxKind::LessLessLess, "<<<"),
+            (SyntaxKind::Text, "word"),
+            (SyntaxKind::Newline, "\n"),
+            (SyntaxKind::Text, "next"),
+            (SyntaxKind::Newline, "\n"),
+        ]
+    );
 }
 
 #[test]

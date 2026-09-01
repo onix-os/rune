@@ -49,6 +49,10 @@ pub enum SyntaxKind {
     Backtick,
     /// A `~` or `~user` at the start of a word.
     Tilde,
+    /// The body of a here-document, from the line after `<<DELIM` to the line before its end.
+    HeredocText,
+    /// The line that closes a here-document, with its newline.
+    HeredocEnd,
     /// A byte the tokenizer could not classify.
     Unknown,
 

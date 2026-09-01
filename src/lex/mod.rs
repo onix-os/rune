@@ -10,11 +10,13 @@
 
 mod cursor;
 mod expand;
+mod heredoc;
 mod operator;
 mod word;
 
 use crate::tree::SyntaxKind;
 use cursor::Cursor;
+use heredoc::Heredoc;
 
 /// One token: what it is, and how many bytes of source it takes up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +40,9 @@ pub(crate) enum BraceStage {
     Start,
     /// The name has been read; an operator or a subscript may follow.
     Name,
+    /// Between `[` and `]`. What is in there is arithmetic, so `-` and `+` are not operators on
+    /// the parameter: `${h[i+1]}` indexes, it does not default.
+    Subscript,
     /// Past the operator. What is left is an ordinary word.
     Operand,
 }
@@ -57,8 +62,15 @@ pub(crate) enum Mode {
 
 pub(crate) struct Lexer<'a> {
     pub(crate) cursor: Cursor<'a>,
+    text: &'a str,
     out: Vec<Lexed>,
     modes: Vec<Mode>,
+    /// Bodies owed, to be read at the end of the line that asked for them.
+    heredocs: Vec<Heredoc>,
+    /// Set while the word naming a here-document delimiter is being collected; the flag inside is
+    /// whether the operator was `<<-`.
+    awaiting_delimiter: Option<bool>,
+    delimiter_text: String,
     /// Whether the next token would start a word rather than continue one.
     ///
     /// `#` opens a comment only here, and `~` names a home directory only here: `echo a#b` prints
@@ -70,26 +82,41 @@ impl<'a> Lexer<'a> {
     fn new(text: &'a str) -> Self {
         Self {
             cursor: Cursor::new(text),
+            text,
             out: Vec::new(),
             modes: vec![Mode::Normal],
+            heredocs: Vec::new(),
+            awaiting_delimiter: None,
+            delimiter_text: String::new(),
             at_word_start: true,
         }
     }
 
     fn run(mut self) -> Vec<Lexed> {
+        let source: &'a str = self.text;
         while !self.cursor.is_eof() {
             let start = self.cursor.offset();
-            let kind = self.token();
+            let mut kind = self.token();
             if self.cursor.offset() == start {
                 // A branch that consumed nothing would spin here forever. Take a character and
                 // call it unknown; the parser reports it and carries on.
                 self.cursor.bump();
-                let len = self.cursor.offset() - start;
-                self.emit(SyntaxKind::Unknown, len);
-                continue;
+                kind = SyntaxKind::Unknown;
             }
-            let len = self.cursor.offset() - start;
-            self.emit(kind, len);
+            let end = self.cursor.offset();
+            self.emit(kind, end - start);
+
+            let text = source.get(start as usize..end as usize).unwrap_or("");
+            self.collect_delimiter(kind, text);
+            match kind {
+                SyntaxKind::LessLess => self.expect_delimiter(false),
+                SyntaxKind::LessLessDash => self.expect_delimiter(true),
+                SyntaxKind::Newline => {
+                    self.finish_delimiter();
+                    self.take_heredoc_bodies();
+                }
+                _ => {}
+            }
         }
         self.out
     }

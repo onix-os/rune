@@ -33,12 +33,13 @@ pub(super) const fn continues_a_word(kind: SyntaxKind) -> bool {
 
 /// Whether a character can sit inside a run of plain text.
 ///
-/// `}` breaks a run so that a `${...}` can end on one. Outside a parameter expansion that only
-/// means `a}b` arrives as two pieces of the same word, which is a distinction without a difference.
+/// `}` and `]` break a run so that a `${...}` and a `${a[i]}` can end on one. Outside a parameter
+/// expansion that only means `a}b` arrives as two pieces of the same word, which is a distinction
+/// without a difference.
 fn is_plain(ch: char) -> bool {
     !matches!(
         ch,
-        '\'' | '"' | '\\' | '$' | '`' | '}' | '\n' | ' ' | '\t' | '\r'
+        '\'' | '"' | '\\' | '$' | '`' | '}' | ']' | '\n' | ' ' | '\t' | '\r'
     ) && !operator::starts_one(ch)
 }
 
