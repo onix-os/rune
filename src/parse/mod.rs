@@ -82,6 +82,8 @@ pub(crate) struct Parser<'a> {
     pos: usize,
     /// How many backtick substitutions are open, so a closing `` ` `` is not read as an opening one.
     backticks: u32,
+    /// Tokens that close something we are nested inside, which recovery must not step over.
+    guards: Vec<SyntaxKind>,
     /// How many rules are on the stack, so nesting can be stopped before the stack is.
     depth: u32,
     builder: Builder,
@@ -105,6 +107,7 @@ impl<'a> Parser<'a> {
             starts,
             pos: 0,
             backticks: 0,
+            guards: Vec::new(),
             depth: 0,
             builder: Builder::new(Source::new(text), SyntaxKind::Script),
             errors: Vec::new(),
@@ -242,6 +245,24 @@ impl<'a> Parser<'a> {
     /// How far the parser has got. A rule that returns without changing this made no progress.
     pub(crate) const fn progress(&self) -> usize {
         self.pos
+    }
+
+    /// Note a token that closes an enclosing construct, so that recovery stops before it.
+    ///
+    /// Without this, a body that does not parse takes the bracket around it down too: the `)` in
+    /// `$(if)` was swallowed while recovering from the `if`, leaving the substitution looking as
+    /// though it had never been closed and the whole file unparseable rather than one word of it.
+    pub(crate) fn push_guard(&mut self, kind: SyntaxKind) {
+        self.guards.push(kind);
+    }
+
+    pub(crate) fn pop_guard(&mut self) {
+        self.guards.pop();
+    }
+
+    /// Whether the next token closes something we are inside.
+    pub(crate) fn at_guard(&self) -> bool {
+        self.peek().is_some_and(|kind| self.guards.contains(&kind))
     }
 
     /// Whether a `` ` `` here would be closing a substitution rather than opening one.

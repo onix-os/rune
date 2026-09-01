@@ -191,7 +191,9 @@ impl Parser<'_> {
         let opened_at = self.position();
         self.start(SyntaxKind::Subshell);
         self.bump();
+        self.push_guard(SyntaxKind::RParen);
         self.command_list_until(&[SyntaxKind::RParen]);
+        self.pop_guard();
         if !self.eat(SyntaxKind::RParen) {
             self.unclosed("(", opened_at, &[SyntaxKind::RParen]);
         }

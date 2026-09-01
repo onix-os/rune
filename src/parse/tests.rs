@@ -404,15 +404,9 @@ fn one_unclosed_construct_is_reported_once() {
     assert_eq!(errors("echo $(ls"), ["this `$(` was never closed"]);
     assert_eq!(errors("echo ${x"), ["this `${` was never closed"]);
     // An `if` with no `then` used to be reported once for the `then` and again for the `fi`.
-    assert_eq!(
-        errors("echo $(if)"),
-        [
-            "this is not something a command can start with",
-            // Both are reported at the end of the input, innermost first.
-            "this `if` was never closed",
-            "this `$(` was never closed",
-        ]
-    );
+    // Recovery also used to swallow the `)`, so the substitution around it looked unclosed too and
+    // one broken word became three messages about the whole file.
+    assert_eq!(errors("echo $(if)"), ["this `if` was never closed"]);
     assert_eq!(errors("while a").len(), 1);
     assert_eq!(errors("for i in a").len(), 1);
     assert_eq!(errors("case $x").len(), 1);

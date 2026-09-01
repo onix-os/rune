@@ -61,7 +61,9 @@ impl Parser<'_> {
         };
         self.open(SyntaxKind::ProcessSubstitution);
         self.bump_raw();
+        self.push_guard(SyntaxKind::RParen);
         self.command_list_until(&[SyntaxKind::RParen]);
+        self.pop_guard();
         if !self.eat(SyntaxKind::RParen) {
             self.push_error(
                 Error::new(
@@ -83,7 +85,9 @@ impl Parser<'_> {
         if closer == SyntaxKind::Backtick {
             self.enter_backticks();
         }
+        self.push_guard(closer);
         self.command_list_until(&[closer]);
+        self.pop_guard();
         if closer == SyntaxKind::Backtick {
             self.leave_backticks();
         }
