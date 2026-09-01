@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.2] - 2026-09-01
+
+### <!-- 0 -->⛰️  Features
+
+- An error lands on the construct that broke
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Recovery stops at a bracket it is inside
+- A compound keeps its trailing redirections
+- Trailing trivia belongs in the tree
+
 ## [0.1.1] - 2026-09-01
 
 ### <!-- 0 -->⛰️  Features
