@@ -17,6 +17,7 @@
 
 pub mod ast;
 pub mod error;
+pub mod format;
 pub mod lex;
 pub mod parse;
 pub mod source;
@@ -25,6 +26,7 @@ pub mod tree;
 
 pub use ast::Script;
 pub use error::{Completeness, Error, Severity};
+pub use format::{Options as FormatOptions, format, format_tree, format_with};
 pub use lex::{Lexed, Lexing, Unclosed, lex};
 pub use parse::{Parsed, parse};
 pub use source::Source;

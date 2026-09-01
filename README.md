@@ -9,7 +9,7 @@ errors in it reports nine.
 Every byte of the input is in the tree: whitespace, comments, and the text of things that did not
 parse. Concatenating the tree's tokens returns the input unchanged, which is the invariant the
 whole crate rests on and the one the test suite asserts on everything it parses. Recovery, syntax
-highlighting and a formatter are all built on it.
+highlighting and the formatter are all built on it.
 
 ## What it does so far
 
@@ -29,16 +29,24 @@ sense of.
   view cannot drift from the tree.
 - **`Parsed::completeness`** — `Complete`, `Unfinished` or `Invalid`, which is what an interactive
   prompt needs to decide between running a line, reading another, and complaining.
+- **Formatter** — `rune::format(text)`. A walk that rewrites only the space *between* tokens, so a
+  construct it has never heard of comes out as the text it was, and a here-document body is never
+  touched at all. Two invariants, both asserted over the corpus: formatting twice is formatting
+  once, and the node tree and every significant token are the same before and after. A script that
+  will not parse is refused rather than reformatted.
 
-Against oslo's corpus of 432 real scripts: every one reconstructs byte for byte, and 424 parse with
-nothing to report. Seven of the other eight are fixtures written to be broken; the last is a
-genuine unterminated quote.
+Against oslo's corpus of 432 real scripts: every one reconstructs byte for byte, and 423 parse with
+nothing to report — the same 423 format, and both invariants hold on every one. Eight of the other
+nine are fixtures written to be broken; the last is a genuine unterminated quote.
 
 Not done: the arithmetic sub-grammar, and single-token repair for typos. See `PLAN.md`.
 
 ```sh
 # parse a script and show the tree
 cargo run --example main -- script.sh
+
+# format one
+cargo run --example fmt -- script.sh
 
 # check the parser against a directory of real scripts
 RUNE_CORPUS=/path/to/scripts cargo test --test against_a_corpus -- --ignored --nocapture
