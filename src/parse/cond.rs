@@ -176,7 +176,8 @@ impl Parser<'_> {
             SyntaxKind::Less => Some(SyntaxKind::Less),
             SyntaxKind::Great => Some(SyntaxKind::Great),
             SyntaxKind::Text
-                if BINARY.contains(&self.peek_text(0)) || BINARY_AGE.contains(&self.peek_text(0)) =>
+                if BINARY.contains(&self.peek_text(0))
+                    || BINARY_AGE.contains(&self.peek_text(0)) =>
             {
                 Some(SyntaxKind::Text)
             }
@@ -208,7 +209,10 @@ mod tests {
 
     #[test]
     fn a_binary_test_takes_one_on_each_side() {
-        assert_eq!(shape("[[ $a == b ]]"), "CondCommand CondBinary CondWord CondWord");
+        assert_eq!(
+            shape("[[ $a == b ]]"),
+            "CondCommand CondBinary CondWord CondWord"
+        );
         assert!(parse("[[ $a == b ]]").is_clean());
     }
 
@@ -237,10 +241,35 @@ mod tests {
 
     #[test]
     fn angle_brackets_compare_rather_than_redirect() {
-        assert_eq!(shape("[[ a < b ]]"), "CondCommand CondBinary CondWord CondWord");
+        assert_eq!(
+            shape("[[ a < b ]]"),
+            "CondCommand CondBinary CondWord CondWord"
+        );
         assert!(parse("[[ a < b ]]").is_clean());
         // Outside the brackets the same character still redirects.
         assert!(!parse("cmd < b").tree().dump().contains("CondBinary"));
+    }
+
+    #[test]
+    fn a_regex_keeps_its_own_punctuation() {
+        // The parentheses group the regex, not the expression, and `]]` must still be found.
+        for source in [
+            "[[ cat =~ ^(cat|dog)$ ]]",
+            "[[ ab =~ (a)(x)?(b) ]]",
+            "[[ $d =~ ^([0-9]{4})-([0-9]{2}) ]]",
+            "[[ $x =~ a ]] && echo y",
+        ] {
+            assert!(
+                parse(source).is_clean(),
+                "{source:?} reported {:?}",
+                parse(source).errors()
+            );
+            assert!(
+                shape(source).contains("CondBinary"),
+                "{source:?}: {}",
+                shape(source)
+            );
+        }
     }
 
     #[test]

@@ -217,7 +217,6 @@ impl Parser<'_> {
         self.unclosed("((", opened_at, &[SyntaxKind::RParen]);
     }
 
-
     fn case_command(&mut self) {
         let opened_at = self.position();
         self.start(SyntaxKind::CaseCommand);
