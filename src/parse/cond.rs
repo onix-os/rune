@@ -48,6 +48,7 @@ impl Parser<'_> {
                 .opened_at(Span::new(opened_at, opened_at + 2)),
             );
         }
+        self.trailing_redirects();
         self.finish_node();
     }
 

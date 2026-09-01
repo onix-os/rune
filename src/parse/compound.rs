@@ -88,6 +88,7 @@ impl Parser<'_> {
             self.finish_node();
         }
         self.expect_keyword(SyntaxKind::Fi, "if", opened_at);
+        self.trailing_redirects();
         self.finish_node();
     }
 
@@ -101,6 +102,7 @@ impl Parser<'_> {
             self.command_list_until(&[]);
             self.expect_keyword(SyntaxKind::Done, opener, opened_at);
         }
+        self.trailing_redirects();
         self.finish_node();
     }
 
@@ -126,6 +128,7 @@ impl Parser<'_> {
             self.command_list_until(&[]);
             self.expect_keyword(SyntaxKind::Done, "for", opened_at);
         }
+        self.trailing_redirects();
         self.finish_node();
     }
 
@@ -149,6 +152,7 @@ impl Parser<'_> {
             self.command_list_until(&[]);
             self.expect_keyword(SyntaxKind::Done, "select", opened_at);
         }
+        self.trailing_redirects();
         self.finish_node();
     }
 
@@ -162,6 +166,7 @@ impl Parser<'_> {
             self.command_list_until(&[]);
             self.expect_keyword(SyntaxKind::Done, "for", opened_at);
         }
+        self.trailing_redirects();
         self.finish_node();
     }
 
@@ -178,6 +183,7 @@ impl Parser<'_> {
         self.bump_as(SyntaxKind::LBrace);
         self.command_list_until(&[]);
         self.expect_keyword(SyntaxKind::RBrace, "{", opened_at);
+        self.trailing_redirects();
         self.finish_node();
     }
 
@@ -189,6 +195,7 @@ impl Parser<'_> {
         if !self.eat(SyntaxKind::RParen) {
             self.unclosed("(", opened_at, &[SyntaxKind::RParen]);
         }
+        self.trailing_redirects();
         self.finish_node();
     }
 
@@ -196,6 +203,7 @@ impl Parser<'_> {
     fn arith_command(&mut self) {
         self.start(SyntaxKind::ArithCommand);
         self.take_double_parens();
+        self.trailing_redirects();
         self.finish_node();
     }
 
@@ -244,6 +252,7 @@ impl Parser<'_> {
             self.skip_newlines();
         }
         self.expect_keyword(SyntaxKind::Esac, "case", opened_at);
+        self.trailing_redirects();
         self.finish_node();
     }
 

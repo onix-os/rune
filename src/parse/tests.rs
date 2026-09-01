@@ -316,6 +316,43 @@ fn a_here_document_body_hangs_off_the_tree_not_the_end_of_it() {
     assert!(dump.contains("\"after\""), "{dump}");
 }
 
+/// A redirection after a compound command belongs to it, not to the statement after it.
+///
+/// `{ …; } 2>&1 | sort` reads stderr into the pipe. Left as a statement of its own, the
+/// redirection did nothing and the stream went to the terminal instead.
+#[test]
+fn a_compound_command_takes_its_trailing_redirections() {
+    for source in [
+        "{ echo a; } 2>&1",
+        "( echo a ) > log",
+        "if a; then b; fi > log",
+        "while a; do b; done < in",
+        "for i in a; do b; done >> log",
+        "case x in a) b;; esac 2> err",
+        "[[ -f x ]] > log",
+        "(( 1 + 1 )) > log",
+    ] {
+        let parsed = parse(source);
+        assert!(
+            parsed.is_clean(),
+            "{source:?} reported {:?}",
+            errors(source)
+        );
+        let dump = parsed.tree().dump();
+        // One *top-level* statement, with the redirection inside the construct rather than
+        // beside it. Statements nested in the body do not count, so the depth is what is read.
+        let statements = dump
+            .lines()
+            .filter(|line| line.starts_with("    ListItem@"))
+            .count();
+        assert_eq!(
+            statements, 1,
+            "{source:?} became more than one statement:\n{dump}"
+        );
+        assert!(dump.contains("Redirect@"), "{source:?}:\n{dump}");
+    }
+}
+
 #[test]
 fn a_prompt_can_tell_unfinished_from_wrong() {
     use crate::error::Completeness::{Complete, Invalid, Unfinished};
