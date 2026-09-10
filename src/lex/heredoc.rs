@@ -107,6 +107,22 @@ impl<'a> Lexer<'a> {
                 self.close_body(body_start, end, Some(self.cursor.offset()));
                 return;
             }
+            // **Inside `` `…` ``, the closing backquote may share the delimiter's line.** The old
+            // form is read by finding its matching backquote and parsing what lies between, so
+            // ``x=`cat <<E … E` `` is a here-document whose terminator is `E` and a backquote that
+            // belongs to the substitution around it. Compared strictly the line spells ``E` ``,
+            // nothing ever matched, and the body ran to the end of the file. Only the delimiter is
+            // taken here; the backquote is left to be lexed as what it is.
+            if self.inside_backtick()
+                && let Some(after) = compared.strip_prefix(doc.delimiter.as_str())
+                && after.starts_with('`')
+            {
+                let indent = content.len() - compared.len();
+                let end = self.cursor.offset();
+                self.cursor.advance(indent + doc.delimiter.len());
+                self.close_body(body_start, end, Some(self.cursor.offset()));
+                return;
+            }
             self.cursor.advance(line.len());
         }
     }

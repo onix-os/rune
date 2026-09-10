@@ -502,3 +502,55 @@ fn a_lone_dollar_is_just_a_character() {
         [(SyntaxKind::Text, "5"), (SyntaxKind::Dollar, "$")]
     );
 }
+
+/// A here-document whose terminator line carries the closing backquote.
+///
+/// The old form is read by finding its matching backquote and parsing what lies between, so the
+/// delimiter line of ``x=`cat <<E … E` `` is `E` and the backquote belongs to the substitution
+/// around it. Compared strictly the line spells ``E` ``, nothing matched, and the body ran to the
+/// end of the file.
+#[test]
+fn a_heredoc_terminator_may_carry_a_closing_backquote() {
+    let text = "x=`cat <<E\nbody\nE`\n";
+    let lexing = lex(text);
+    let total: u32 = lexing.tokens.iter().map(|t| t.len).sum();
+    assert_eq!(
+        total as usize,
+        text.len(),
+        "the tokens must cover the input"
+    );
+    assert!(
+        lexing.unclosed.is_empty(),
+        "nothing was left open: {:?}",
+        lexing.unclosed
+    );
+    assert!(
+        lexing
+            .tokens
+            .iter()
+            .any(|t| t.kind == SyntaxKind::HeredocEnd),
+        "the terminator was never found"
+    );
+}
+
+/// The ordinary spellings are untouched: a backquote on its own line, and no backquote at all.
+#[test]
+fn an_ordinary_heredoc_terminator_is_unchanged() {
+    for text in ["x=`cat <<E\nbody\nE\n`\n", "cat <<E\nbody\nE\n"] {
+        let lexing = lex(text);
+        let total: u32 = lexing.tokens.iter().map(|t| t.len).sum();
+        assert_eq!(total as usize, text.len(), "{text:?}");
+        assert!(lexing.unclosed.is_empty(), "{text:?}");
+    }
+    // A line that merely starts with the delimiter is body, not a terminator.
+    let text = "cat <<E\nEx\nE\n";
+    let lexing = lex(text);
+    assert!(lexing.unclosed.is_empty());
+    assert!(
+        lexing
+            .tokens
+            .iter()
+            .any(|t| t.kind == SyntaxKind::HeredocText),
+        "the body went missing"
+    );
+}

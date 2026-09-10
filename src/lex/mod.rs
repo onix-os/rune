@@ -83,7 +83,13 @@ pub(crate) enum Mode {
     /// A command substitution holds ordinary shell wherever it appears, so this has to be a mode
     /// of its own rather than a continuation of the one around it: in `"$(ls)"` the quoting stops
     /// at the `$(` and starts again after the `)`.
-    CommandSub { depth: i32 },
+    ///
+    /// `cases` is how many `case` constructs are open inside it, because a `case` *pattern* ends
+    /// with a `)` that closes nothing: in `"$(case a in a) echo hi;; esac)"` the first `)` is the
+    /// pattern's, and counting parentheses alone read it as the end of the substitution — after
+    /// which the rest was lexed as the string it was nested in, and both the `case` and the `$(`
+    /// were reported unclosed. While a `case` is open, a `)` at depth zero is a pattern's.
+    CommandSub { depth: i32, cases: i32 },
     /// Inside `` `...` ``, which is a command substitution written the old way.
     Backtick,
 }
@@ -122,6 +128,11 @@ pub(crate) struct Lexer<'a> {
     /// `#` opens a comment only here, and `~` names a home directory only here: `echo a#b` prints
     /// `a#b`, and `echo a~b` is not a path.
     pub(crate) at_word_start: bool,
+    /// Whether the next word inside a command substitution would begin a command.
+    ///
+    /// Starts true: the first thing inside a `$(` is a command. Only maintained while lexing a
+    /// command substitution, which is the only place it is asked about.
+    command_can_start: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -137,6 +148,7 @@ impl<'a> Lexer<'a> {
             awaiting_delimiter: None,
             delimiter_text: String::new(),
             at_word_start: true,
+            command_can_start: true,
         }
     }
 
@@ -191,16 +203,27 @@ impl<'a> Lexer<'a> {
                 }
                 self.arithmetic_run()
             }
-            Mode::CommandSub { depth } => {
+            Mode::CommandSub { depth, cases } => {
                 if self.cursor.peek() == Some(')') {
                     self.cursor.bump();
-                    if depth == 0 {
+                    if depth == 0 && cases == 0 {
                         self.pop_mode();
-                    } else {
+                    } else if depth > 0 {
                         self.bump_sub_depth(-1);
                     }
+                    // A `case` item's body begins after its pattern's `)`, so a `case` nested
+                    // directly inside another one is at a command start here. This branch returns
+                    // early, so it has to say so itself.
+                    self.command_can_start = true;
+                    // With a `case` open and nothing else nested, this closed a pattern and the
+                    // substitution is still going: neither counter moves.
                     return SyntaxKind::RParen;
                 }
+                // **Not gated on `at_word_start`.** That flag is about the word *outside* — in
+                // `x=$(case …)` the `$(` is a piece of the word `x=$(…)`, so it reads false for the
+                // very first token inside, which is exactly where a `case` most often is.
+                let at_command_start = self.command_can_start;
+                let started_at = self.token_start;
                 let kind = self.normal_token();
                 // Anything that opens a parenthesis owes a `)` that is not the closing one.
                 if matches!(
@@ -209,6 +232,14 @@ impl<'a> Lexer<'a> {
                 ) {
                     self.bump_sub_depth(1);
                 }
+                let text = self
+                    .text
+                    .get(started_at as usize..self.cursor.offset() as usize)
+                    .unwrap_or("");
+                if !kind.is_trivia() {
+                    self.command_can_start = Self::ends_a_command(kind, text);
+                }
+                self.note_case_word(text, at_command_start);
                 kind
             }
             Mode::Normal | Mode::Backtick => self.normal_token(),
@@ -241,6 +272,14 @@ impl<'a> Lexer<'a> {
 
     pub(crate) fn mode(&self) -> Mode {
         self.modes.last().map_or(Mode::Normal, |(mode, _)| *mode)
+    }
+
+    /// Whether any backquote substitution is open, however deeply the modes are stacked.
+    ///
+    /// Not [`Self::mode`]: a here-document's body is read at the end of the line that asked for it,
+    /// and by then the word around the `<<` may have opened modes of its own.
+    pub(crate) fn inside_backtick(&self) -> bool {
+        self.modes.iter().any(|(mode, _)| *mode == Mode::Backtick)
     }
 
     pub(crate) fn push_mode(&mut self, mode: Mode) {
@@ -284,7 +323,7 @@ impl<'a> Lexer<'a> {
     }
 
     pub(crate) fn bump_sub_depth(&mut self, by: i32) {
-        if let Some((Mode::CommandSub { depth }, _)) = self.modes.last_mut() {
+        if let Some((Mode::CommandSub { depth, .. }, _)) = self.modes.last_mut() {
             *depth = depth.saturating_add(by).max(0);
         }
     }
@@ -297,6 +336,60 @@ impl<'a> Lexer<'a> {
             self.at_word_start = !kind.is_word_piece();
         }
         self.out.push(Lexed { kind, len });
+    }
+
+    /// Whether a word starting here would be the first word of a command.
+    ///
+    /// Only ever an approximation, and only used to decide whether a `case` is the keyword — see
+    /// [`Self::note_case_word`]. Everything listed ends a command, so what follows begins one.
+    /// Whether a token of this kind and text leaves a place where a command can begin after it.
+    ///
+    /// **The reserved words are checked by text, because to the lexer they are not reserved.** `{`,
+    /// `do` and `then` all arrive as `Text` — the tree shows `LBrace` because the *parser* decides
+    /// that, long after this runs — so a rule written on kinds alone saw `f() { case …` as a `case`
+    /// in the middle of a command and did not count it.
+    fn ends_a_command(kind: SyntaxKind, text: &str) -> bool {
+        matches!(
+            kind,
+            SyntaxKind::Newline
+                | SyntaxKind::Semi
+                | SyntaxKind::SemiSemi
+                | SyntaxKind::SemiAmp
+                | SyntaxKind::SemiSemiAmp
+                | SyntaxKind::Amp
+                | SyntaxKind::AndAnd
+                | SyntaxKind::PipePipe
+                | SyntaxKind::Pipe
+                | SyntaxKind::PipeAmp
+                | SyntaxKind::LParen
+                // A `case` *pattern* ends with one, and the item's body begins after it — which is
+                // how a `case` nested directly inside another one is counted.
+                | SyntaxKind::RParen
+                | SyntaxKind::DollarParen
+                | SyntaxKind::Backtick
+        ) || matches!(text, "{" | "do" | "then" | "else" | "elif" | "!")
+    }
+
+    /// Count a `case` that opened or closed inside a command substitution.
+    ///
+    /// **Position matters for `case` and not for `esac`.** `"$(echo case)"` must still close where
+    /// it closes, so the opener counts only where a command can begin; `esac` is asked for only
+    /// when a `case` is already open, so a word of that spelling anywhere else cannot take one
+    /// away. Neither is a reserved word to the lexer — the parser decides that — so this is a
+    /// count kept for the sole purpose of knowing whether a `)` closes a pattern or a
+    /// substitution.
+    fn note_case_word(&mut self, text: &str, at_command_start: bool) {
+        match text {
+            "case" if at_command_start => self.bump_sub_cases(1),
+            "esac" => self.bump_sub_cases(-1),
+            _ => {}
+        }
+    }
+
+    fn bump_sub_cases(&mut self, by: i32) {
+        if let Some((Mode::CommandSub { cases, .. }, _)) = self.modes.last_mut() {
+            *cases = cases.saturating_add(by).max(0);
+        }
     }
 }
 

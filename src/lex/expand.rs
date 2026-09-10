@@ -39,14 +39,14 @@ impl Lexer<'_> {
     pub(super) fn dollar(&mut self) -> SyntaxKind {
         self.cursor.bump();
         match self.cursor.peek() {
-            Some('(') if self.cursor.peek_at(1) == Some('(') => {
+            Some('(') if self.cursor.peek_at(1) == Some('(') && self.arithmetic_ahead() => {
                 self.cursor.eat("((");
                 self.push_mode(Mode::Arithmetic { depth: 0 });
                 SyntaxKind::DollarParenParen
             }
             Some('(') => {
                 self.cursor.bump();
-                self.push_mode(Mode::CommandSub { depth: 0 });
+                self.push_mode(Mode::CommandSub { depth: 0, cases: 0 });
                 SyntaxKind::DollarParen
             }
             // `$'...'` interprets backslash escapes, so `\'` does not end it. Inside double
@@ -55,7 +55,13 @@ impl Lexer<'_> {
             Some('\'') if self.mode() != Mode::DoubleQuoted => self.ansi_c_quoted(),
             // `$"..."` is a double-quoted string that gets translated. For reading it, the
             // translation changes nothing.
-            Some('"') => {
+            //
+            // **Inert inside double quotes, exactly as `$'…'` is above, and for the same reason.**
+            // A `$` already inside a string cannot open another one: in `"cost: 5$"` the `$` is a
+            // dollar sign and the `"` closes the string. Read as an opener it ate the closing
+            // quote and the string ran on to the next one in the file, so a single price or a
+            // `sed` script ending in `$` cost the rest of the file its structure.
+            Some('"') if self.mode() != Mode::DoubleQuoted => {
                 self.cursor.bump();
                 self.push_mode(Mode::DoubleQuoted);
                 SyntaxKind::DoubleQuote
@@ -78,6 +84,55 @@ impl Lexer<'_> {
             // A `$` before anything else is just a dollar sign: `echo 5$` prints `5$`.
             _ => SyntaxKind::Dollar,
         }
+    }
+
+    /// Whether the `$((` the cursor is sitting on opens arithmetic or a subshell.
+    ///
+    /// **`$((` is genuinely ambiguous and only the closing tells you which.** `$((1+2))` is
+    /// arithmetic; `$((cd /) ; pwd)` is a command substitution whose first command is a subshell,
+    /// and both start with the same three characters. Reading every `$((` as arithmetic made the
+    /// second one a syntax error that then swallowed whatever followed.
+    ///
+    /// The rule is the one the shape gives away: scan for where the parentheses balance, and if the
+    /// two that close come from a `))` written together, it was arithmetic. In `$((cd /) ; pwd)`
+    /// they are a `)` and then, after other commands, another `)` — a subshell inside a command
+    /// substitution. Quoting is skipped so a `)` inside `'…'` cannot decide it.
+    ///
+    /// Input that never balances stays arithmetic, which is what it was before this and keeps an
+    /// unfinished `$((1+2` reported as unfinished arithmetic rather than as an unclosed `$(`.
+    fn arithmetic_ahead(&self) -> bool {
+        let rest = self.cursor.rest();
+        let mut chars = rest.char_indices().skip(2);
+        let mut depth = 2u32;
+        // Where the parenthesis that took the depth from two to one sits.
+        let mut first_close: Option<usize> = None;
+        while let Some((at, ch)) = chars.next() {
+            match ch {
+                '\\' => {
+                    chars.next();
+                }
+                '\'' | '"' | '`' => {
+                    // Skip the quoted run. An unterminated one runs to the end, which leaves the
+                    // depth unbalanced and so answers arithmetic — the unchanged behaviour.
+                    for (_, inner) in chars.by_ref() {
+                        if inner == ch {
+                            break;
+                        }
+                    }
+                }
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    match depth {
+                        1 => first_close = Some(at),
+                        0 => return first_close.is_some_and(|first| at == first + 1),
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        true
     }
 
     /// `$'...'`, whose backslash escapes protect the quote that would otherwise end it.
