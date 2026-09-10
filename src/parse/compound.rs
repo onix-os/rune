@@ -29,7 +29,7 @@ impl Parser<'_> {
         } else if self.at_word_exactly("[[") {
             self.cond_command();
         } else if self.at(SyntaxKind::LParen) {
-            if self.next_is_adjacent(SyntaxKind::LParen) {
+            if self.next_is_adjacent(SyntaxKind::LParen) && self.double_parens_close_together() {
                 self.arith_command();
             } else {
                 self.subshell();
@@ -215,6 +215,47 @@ impl Parser<'_> {
         self.take_double_parens();
         self.trailing_redirects();
         self.finish_node();
+    }
+
+    /// Whether the `((` here is closed by a `))` written together, rather than by two `)` apart.
+    ///
+    /// **Adjacency at the opening is not enough to tell them apart.** `((` opens arithmetic and
+    /// `( (` opens a subshell inside a subshell, and the tokenizer's longest match already made
+    /// that distinction — but a *nested subshell written without a space* is spelled `((` too, and
+    /// it is ordinary shell:
+    ///
+    /// ```sh
+    /// ((gzip -cdfq -- "$f" 4>&-
+    ///   echo $? >&4) 3>&- </dev/null | eval "$cmp" - >&3)
+    /// ```
+    ///
+    /// That is from `zdiff`, and reading it as arithmetic cost the file three `case` constructs and
+    /// four other errors. What decides it is the same thing that decides `$((`: where the two
+    /// parentheses close. Together, it was arithmetic; apart, they were two subshells.
+    ///
+    /// A run that never balances stays arithmetic, so an unfinished `((1+2` is still reported
+    /// against the `((` it opened.
+    fn double_parens_close_together(&self) -> bool {
+        let Some(first) = self.significant(0) else {
+            return false;
+        };
+        let mut depth = 0i32;
+        let mut closed_inner: Option<usize> = None;
+        for (at, token) in self.tokens.iter().enumerate().skip(first) {
+            match token.kind {
+                SyntaxKind::LParen => depth += 1,
+                SyntaxKind::RParen => {
+                    depth -= 1;
+                    match depth {
+                        1 => closed_inner = Some(at),
+                        0 => return closed_inner.is_some_and(|inner| at == inner + 1),
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        true
     }
 
     /// Consume `((`, everything up to the matching `))`, and the `))`.

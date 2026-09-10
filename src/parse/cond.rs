@@ -9,9 +9,14 @@ use super::Parser;
 use crate::tree::SyntaxKind;
 
 /// The tests that take one operand.
-const UNARY: [&str; 24] = [
+///
+/// All twenty-six bash has. `-S` and `-O` were the two missing, and a missing one does not degrade
+/// to a word: this grammar has nowhere to put an operator it does not know, so `[[ -S "$sock" ]]`
+/// reported `this '[[' was never closed` and the recovery took the rest of the construct with it.
+/// Both appear in ordinary scripts — a socket test and an owned-by-me test.
+const UNARY: [&str; 26] = [
     "-a", "-b", "-c", "-d", "-e", "-f", "-g", "-h", "-k", "-p", "-r", "-s", "-t", "-u", "-w", "-x",
-    "-z", "-n", "-o", "-v", "-R", "-G", "-L", "-N",
+    "-z", "-n", "-o", "-v", "-R", "-G", "-L", "-N", "-O", "-S",
 ];
 
 /// The tests that take an operand on each side, written as words.
