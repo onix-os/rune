@@ -108,9 +108,64 @@ impl Lexer<'_> {
 
     fn plain_text(&mut self) -> SyntaxKind {
         let in_brace = matches!(self.mode(), Mode::Brace { .. });
+        let begins_word = self.at_word_start;
+        let start = self.cursor.offset();
         self.cursor.bump();
         self.cursor
             .eat_while(|ch| is_plain(ch) && !(in_brace && ch == ']'));
+        if self.cursor.peek() == Some('(') && self.opens_extglob(start, begins_word) {
+            self.cursor.bump();
+            self.push_mode(Mode::ExtGlob { depth: 0 });
+        }
         SyntaxKind::Text
+    }
+
+    /// Whether the run just read ends in an `extglob` operator with its `(` next: `@(a|b)`.
+    ///
+    /// **Read whether or not `extglob` is on**, because the lexer cannot know: bash refuses these
+    /// with the option off, so no working script is read differently, and the shell refuses them
+    /// where it knows the option. `!(` is the one ambiguity — where a command can start, `!(cmd)`
+    /// is `!` and a subshell, as bash reads it with `extglob` off.
+    fn opens_extglob(&self, start: u32, begins_word: bool) -> bool {
+        let run = self
+            .text
+            .get(start as usize..self.cursor.offset() as usize)
+            .unwrap_or("");
+        match run.chars().last() {
+            Some('?' | '*' | '+' | '@') => true,
+            Some('!') => {
+                !(begins_word && run == "!" && self.command_can_start && !self.pattern_next)
+            }
+            _ => false,
+        }
+    }
+
+    /// A piece inside an `extglob` group: `(`, `)`, or a run of anything but quoting and `$`.
+    ///
+    /// Spaces and `|` belong to the pattern here, and the `)` that matches the group's `(` ends it.
+    pub(super) fn extglob_piece(&mut self, depth: i32) -> SyntaxKind {
+        match self.cursor.peek() {
+            Some(')') => {
+                self.cursor.bump();
+                if depth == 0 {
+                    self.pop_mode();
+                } else {
+                    self.set_extglob_depth(depth - 1);
+                }
+                SyntaxKind::Text
+            }
+            Some('(') => {
+                self.cursor.bump();
+                self.set_extglob_depth(depth + 1);
+                SyntaxKind::Text
+            }
+            Some('\'' | '"' | '\\' | '`' | '$') => self.word_piece(),
+            _ => {
+                self.cursor.bump();
+                self.cursor
+                    .eat_while(|ch| !matches!(ch, '(' | ')' | '\'' | '"' | '\\' | '`' | '$'));
+                SyntaxKind::Text
+            }
+        }
     }
 }

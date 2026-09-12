@@ -21,6 +21,64 @@ fn kinds(text: &str) -> Vec<SyntaxKind> {
         .collect()
 }
 
+/// Whether any token of `text` is one of `kinds`.
+fn has_any(text: &str, kinds: &[SyntaxKind]) -> bool {
+    tokens(text).iter().any(|(kind, _)| kinds.contains(kind))
+}
+
+/// An `extglob` group is part of its word: no `(`, no `|` and no word break inside it.
+#[test]
+fn an_extglob_group_is_part_of_its_word() {
+    for text in [
+        "echo @(a b|c)",
+        "ls !(*.txt|*.md)",
+        "echo x*(\"a b\"|$v)y +(a|+(b))",
+        "v=${x##+(a)}",
+        "ls !(x)",
+        "true && echo ?(x)",
+        "echo $(a) !(x)",
+        "echo `a` !(x)",
+    ] {
+        assert!(
+            !has_any(text, &[SyntaxKind::LParen, SyntaxKind::Pipe]),
+            "{text}: {:?}",
+            tokens(text)
+        );
+    }
+    let spaces = tokens("echo @(a b|c)")
+        .into_iter()
+        .filter(|(kind, _)| *kind == SyntaxKind::Whitespace)
+        .count();
+    assert_eq!(spaces, 1, "the space inside the group is the pattern's");
+}
+
+/// `!(` where a command can start is `!` and a subshell; a `case` pattern is not a command.
+#[test]
+fn a_negated_subshell_stays_one() {
+    for text in [
+        "!(echo hi)",
+        "true && !(false)",
+        "if !(false); then :; fi",
+        "x | !(y)",
+    ] {
+        assert!(
+            has_any(text, &[SyntaxKind::LParen]),
+            "{text}: {:?}",
+            tokens(text)
+        );
+    }
+    for text in [
+        "case y in !(x)) ;; esac",
+        "case y in\n!(x)) ;;\n!(z)) ;; esac",
+    ] {
+        let opens = tokens(text)
+            .into_iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::LParen)
+            .count();
+        assert_eq!(opens, 0, "{text}: {:?}", tokens(text));
+    }
+}
+
 /// Shell that has given lexers trouble, plus the ordinary cases.
 const SCRIPTS: &[&str] = &[
     "",

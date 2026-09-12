@@ -92,6 +92,11 @@ pub(crate) enum Mode {
     CommandSub { depth: i32, cases: i32 },
     /// Inside `` `...` ``, which is a command substitution written the old way.
     Backtick,
+    /// Inside an `extglob` group — `@(a|b)`, `!(*.txt)` — counting parentheses to find its end.
+    ///
+    /// The group is part of the word it is in, spaces and `|` included, so it cannot be read in
+    /// normal mode, where both end a word. Quotes and expansions inside keep their meaning.
+    ExtGlob { depth: i32 },
 }
 
 impl Mode {
@@ -104,6 +109,7 @@ impl Mode {
             Self::Arithmetic { .. } => "$((",
             Self::CommandSub { .. } => "$(",
             Self::Backtick => "`",
+            Self::ExtGlob { .. } => "(",
         }
     }
 }
@@ -128,11 +134,17 @@ pub(crate) struct Lexer<'a> {
     /// `#` opens a comment only here, and `~` names a home directory only here: `echo a#b` prints
     /// `a#b`, and `echo a~b` is not a path.
     pub(crate) at_word_start: bool,
-    /// Whether the next word inside a command substitution would begin a command.
+    /// Whether the next word would begin a command.
     ///
-    /// Starts true: the first thing inside a `$(` is a command. Only maintained while lexing a
-    /// command substitution, which is the only place it is asked about.
+    /// Starts true: the first thing in a script, and inside a `$(`, is a command. Asked inside a
+    /// command substitution to count `case`, and everywhere to read `!(`: where a command can
+    /// start it is `!` and a subshell, anywhere else an `extglob` group.
     command_can_start: bool,
+    /// Whether the next word is a `case` pattern: after `in`, `;;`, `;&` or `;;&`.
+    ///
+    /// A pattern follows a newline too, where a command could otherwise start, so `!(x))` there is
+    /// a group rather than a negated subshell.
+    pattern_next: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -149,6 +161,7 @@ impl<'a> Lexer<'a> {
             delimiter_text: String::new(),
             at_word_start: true,
             command_can_start: true,
+            pattern_next: false,
         }
     }
 
@@ -206,15 +219,17 @@ impl<'a> Lexer<'a> {
             Mode::CommandSub { depth, cases } => {
                 if self.cursor.peek() == Some(')') {
                     self.cursor.bump();
-                    if depth == 0 && cases == 0 {
+                    let closes = depth == 0 && cases == 0;
+                    if closes {
                         self.pop_mode();
                     } else if depth > 0 {
                         self.bump_sub_depth(-1);
                     }
                     // A `case` item's body begins after its pattern's `)`, so a `case` nested
-                    // directly inside another one is at a command start here. This branch returns
-                    // early, so it has to say so itself.
-                    self.command_can_start = true;
+                    // directly inside another one is at a command start here. The substitution's
+                    // own `)` is the other way round: the word it was in goes on. This branch
+                    // returns early, so it has to say so itself.
+                    self.command_can_start = !closes;
                     // With a `case` open and nothing else nested, this closed a pattern and the
                     // substitution is still going: neither counter moves.
                     return SyntaxKind::RParen;
@@ -236,13 +251,21 @@ impl<'a> Lexer<'a> {
                     .text
                     .get(started_at as usize..self.cursor.offset() as usize)
                     .unwrap_or("");
-                if !kind.is_trivia() {
-                    self.command_can_start = Self::ends_a_command(kind, text);
-                }
+                self.note_position(kind, text);
                 self.note_case_word(text, at_command_start);
                 kind
             }
-            Mode::Normal | Mode::Backtick => self.normal_token(),
+            Mode::ExtGlob { depth } => self.extglob_piece(depth),
+            Mode::Normal | Mode::Backtick => {
+                let started_at = self.token_start as usize;
+                let kind = self.normal_token();
+                let text = self
+                    .text
+                    .get(started_at..self.cursor.offset() as usize)
+                    .unwrap_or("");
+                self.note_position(kind, text);
+                kind
+            }
         }
     }
 
@@ -283,6 +306,11 @@ impl<'a> Lexer<'a> {
     }
 
     pub(crate) fn push_mode(&mut self, mode: Mode) {
+        // The first thing inside a command substitution is a command, wherever its `$(` was.
+        if matches!(mode, Mode::CommandSub { .. } | Mode::Backtick) {
+            self.command_can_start = true;
+            self.pattern_next = false;
+        }
         self.modes.push((mode, self.token_start));
     }
 
@@ -319,6 +347,12 @@ impl<'a> Lexer<'a> {
     pub(crate) fn bump_arith_depth(&mut self, by: i32) {
         if let Some((Mode::Arithmetic { depth }, _)) = self.modes.last_mut() {
             *depth = depth.saturating_add(by).max(0);
+        }
+    }
+
+    pub(crate) fn set_extglob_depth(&mut self, to: i32) {
+        if let Some((Mode::ExtGlob { depth }, _)) = self.modes.last_mut() {
+            *depth = to;
         }
     }
 
@@ -367,7 +401,30 @@ impl<'a> Lexer<'a> {
                 | SyntaxKind::RParen
                 | SyntaxKind::DollarParen
                 | SyntaxKind::Backtick
-        ) || matches!(text, "{" | "do" | "then" | "else" | "elif" | "!")
+        ) || matches!(
+            text,
+            "{" | "do" | "then" | "else" | "elif" | "!" | "if" | "while" | "until" | "time"
+        )
+    }
+
+    /// Keep [`Self::command_can_start`] and [`Self::pattern_next`] true to the token just read.
+    fn note_position(&mut self, kind: SyntaxKind, text: &str) {
+        match kind {
+            _ if kind.is_trivia() => {}
+            SyntaxKind::Newline => self.command_can_start = true,
+            // A closing backtick ends a substitution inside a word, and the word goes on.
+            SyntaxKind::Backtick if self.mode() != Mode::Backtick => self.command_can_start = false,
+            SyntaxKind::SemiSemi | SyntaxKind::SemiAmp | SyntaxKind::SemiSemiAmp => {
+                self.command_can_start = true;
+                self.pattern_next = true;
+            }
+            // `case x in (a) …` — the optional opening parenthesis still leads to a pattern.
+            SyntaxKind::LParen if self.pattern_next => self.command_can_start = true,
+            _ => {
+                self.command_can_start = Self::ends_a_command(kind, text);
+                self.pattern_next = kind == SyntaxKind::Text && text == "in";
+            }
+        }
     }
 
     /// Count a `case` that opened or closed inside a command substitution.

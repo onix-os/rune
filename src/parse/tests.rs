@@ -35,6 +35,24 @@ fn errors(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Every place bash reads an `extglob` group parses, and the constructs that merely look like one
+/// — arithmetic, a negated subshell, a regex — still parse as they did.
+#[test]
+fn extglob_groups_parse_where_bash_reads_them() {
+    for text in [
+        "echo @(a|b) x*(c)y",
+        "case x in @(a|b)) echo y;; !(c)) ;; esac",
+        "[[ x == +(a|b) ]]",
+        "[[ ab =~ ^a*(b|c)$ ]]",
+        "v=${x##+(a)}",
+        "(( x=2*(1) )); for ((i=0; i<2*(2); i++)); do :; done",
+        "!(echo hi)",
+        "ls !(*.txt) \"$(echo @(a|b))\"",
+    ] {
+        assert!(errors(text).is_empty(), "{text}: {:?}", errors(text));
+    }
+}
+
 #[test]
 fn a_simple_command_is_a_run_of_words() {
     assert_eq!(
