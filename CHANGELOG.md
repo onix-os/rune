@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.1.5] - 2026-09-19
+
+### <!-- 0 -->⛰️  Features
+
+- Read extglob groups as part of words
+
+## [0.1.4] - 2026-09-10
+
+## [0.1.4] - 2026-09-10
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- A `$` before a closing double quote is a dollar sign
+- `[[ -S ]]` and `[[ -O ]]` are unary tests
+- A `case` pattern inside a quoted `$( )` ends nothing
+- `$((` opens a subshell when that is what it opens
+- A here-document terminator may carry a closing backquote
+- Adjacent parens can open two subshells
+
 ## [0.1.3] - 2026-09-01
 
 ### <!-- 0 -->⛰️  Features

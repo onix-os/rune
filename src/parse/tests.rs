@@ -35,6 +35,24 @@ fn errors(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Every place bash reads an `extglob` group parses, and the constructs that merely look like one
+/// — arithmetic, a negated subshell, a regex — still parse as they did.
+#[test]
+fn extglob_groups_parse_where_bash_reads_them() {
+    for text in [
+        "echo @(a|b) x*(c)y",
+        "case x in @(a|b)) echo y;; !(c)) ;; esac",
+        "[[ x == +(a|b) ]]",
+        "[[ ab =~ ^a*(b|c)$ ]]",
+        "v=${x##+(a)}",
+        "(( x=2*(1) )); for ((i=0; i<2*(2); i++)); do :; done",
+        "!(echo hi)",
+        "ls !(*.txt) \"$(echo @(a|b))\"",
+    ] {
+        assert!(errors(text).is_empty(), "{text}: {:?}", errors(text));
+    }
+}
+
 #[test]
 fn a_simple_command_is_a_run_of_words() {
     assert_eq!(
@@ -463,4 +481,130 @@ fn one_unclosed_construct_is_reported_once() {
 fn an_unclosed_expansion_is_reported() {
     assert_eq!(errors("echo $(ls"), ["this `$(` was never closed"]);
     assert_eq!(errors("echo ${x"), ["this `${` was never closed"]);
+}
+
+/// A `$` immediately before a closing double quote is a dollar sign, not the start of `$"…"`.
+///
+/// **The commonest thing this parser used to refuse.** `$"…"` is a translated string, but a `$`
+/// already inside a string cannot open another one — so in `"cost: 5$"` the quote closes and the
+/// dollar is text. Read as an opener it swallowed the closing quote and the string ran on to the
+/// next one in the file, which cost everything after it its structure.
+#[test]
+fn a_dollar_before_a_closing_quote_is_a_dollar() {
+    assert_eq!(errors(r#"echo "cost: 5$""#), Vec::<String>::new());
+    assert_eq!(errors(r#"echo "a$" "b$""#), Vec::<String>::new());
+    // And the real form still opens a string, where a string is not already open.
+    assert!(
+        shape(r#"echo $"translate me""#)
+            .iter()
+            .any(|k| k.contains("Word"))
+    );
+    assert_eq!(errors(r#"echo $"translate me""#), Vec::<String>::new());
+    // A `$` that names something still names it.
+    assert_eq!(errors(r#"echo "x$HOME""#), Vec::<String>::new());
+}
+
+/// `[[ -S ]]` and `[[ -O ]]`, which were the two unary tests missing from the twenty-six.
+///
+/// An unknown operator is not a word here — the expression grammar has nowhere to put one — so a
+/// missing entry reported the whole `[[` unclosed.
+#[test]
+fn every_unary_file_test_is_known() {
+    for op in [
+        "-a", "-b", "-c", "-d", "-e", "-f", "-g", "-h", "-k", "-p", "-r", "-s", "-t", "-u", "-w",
+        "-x", "-z", "-n", "-o", "-v", "-R", "-G", "-L", "-N", "-O", "-S",
+    ] {
+        let script = format!("[[ {op} /tmp ]] && echo yes");
+        assert_eq!(errors(&script), Vec::<String>::new(), "{op} was refused");
+    }
+    // Something that is not a test still is not one.
+    assert!(
+        !errors("[[ -Q /tmp ]]").is_empty(),
+        "-Q is not a unary test"
+    );
+}
+
+/// A `case` inside a *quoted* command substitution, whose patterns end in an unbalanced `)`.
+///
+/// Counting parentheses alone read the first pattern's `)` as the end of the substitution, after
+/// which the rest was lexed as the string it was nested in.
+#[test]
+fn a_case_inside_a_quoted_substitution_keeps_its_patterns() {
+    for script in [
+        r#"x="$(case a in a) echo hi;; esac)""#,
+        r#"x="$(case a in a) case b in b) echo;; esac;; c) echo two;; esac)""#,
+        r#"x="$(f() { case a in a) :;; esac; }; f)""#,
+        r#"x="$(for i in 1 2; do case $i in 1) echo one;; esac; done)""#,
+        r#"x="$(if true; then case a in a) echo;; esac; fi)""#,
+    ] {
+        assert_eq!(errors(script), Vec::<String>::new(), "{script}");
+    }
+    // **A word that merely spells `case` is not one.** The substitution still closes where it
+    // closes, or this fix would have cost more than the bug.
+    for script in [
+        r#"x="$(echo case)""#,
+        r#"x="$(echo mycase)""#,
+        r#"x="$(echo esac)""#,
+        r#"x="$(echo "a)b")""#,
+    ] {
+        assert_eq!(errors(script), Vec::<String>::new(), "{script}");
+        assert!(
+            shape(script)
+                .iter()
+                .any(|k| k.contains("CommandSubstitution")),
+            "{script} did not close as a substitution"
+        );
+    }
+}
+
+/// `$((` opens arithmetic or a subshell, and only where the parentheses close says which.
+#[test]
+fn a_dollar_double_paren_can_be_a_subshell() {
+    assert!(
+        shape("echo $((cd /) ; pwd)")
+            .iter()
+            .any(|k| k.contains("CommandSubstitution")),
+        "a subshell inside a substitution was read as arithmetic"
+    );
+    for arithmetic in [
+        "echo $((1+2))",
+        "echo $(( (1+2) * 3 ))",
+        "echo $(((1+2)))",
+        "echo $(( a > b ? 1 : 0 ))",
+    ] {
+        assert!(
+            shape(arithmetic)
+                .iter()
+                .any(|k| k.contains("ArithmeticExpansion")),
+            "{arithmetic} stopped being arithmetic"
+        );
+    }
+    // Unfinished stays unfinished, and against the `$((` it opened.
+    assert!(errors("echo $((1+2").iter().any(|e| e.contains("$((")));
+}
+
+/// Two subshells written without a space between them are not an arithmetic command.
+///
+/// From `zdiff`, where reading `((gzip …` as arithmetic cost the file seven errors.
+#[test]
+fn adjacent_parens_can_open_two_subshells() {
+    let shape = shape("((echo a\necho b) | cat)");
+    assert!(
+        shape.iter().filter(|k| k.contains("Subshell")).count() >= 2,
+        "expected two subshells, got {shape:?}"
+    );
+    for arithmetic in ["(( 1 + 2 ))", "((i++))", "(( (1+2) * 3 ))"] {
+        assert!(
+            shape_of(arithmetic)
+                .iter()
+                .any(|k| k.contains("ArithCommand")),
+            "{arithmetic} stopped being an arithmetic command"
+        );
+    }
+    assert!(errors("((1+2").iter().any(|e| e.contains("((")));
+}
+
+/// Same as [`shape`], named apart so a test can shadow the binding.
+fn shape_of(text: &str) -> Vec<String> {
+    shape(text)
 }

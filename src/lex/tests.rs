@@ -21,6 +21,64 @@ fn kinds(text: &str) -> Vec<SyntaxKind> {
         .collect()
 }
 
+/// Whether any token of `text` is one of `kinds`.
+fn has_any(text: &str, kinds: &[SyntaxKind]) -> bool {
+    tokens(text).iter().any(|(kind, _)| kinds.contains(kind))
+}
+
+/// An `extglob` group is part of its word: no `(`, no `|` and no word break inside it.
+#[test]
+fn an_extglob_group_is_part_of_its_word() {
+    for text in [
+        "echo @(a b|c)",
+        "ls !(*.txt|*.md)",
+        "echo x*(\"a b\"|$v)y +(a|+(b))",
+        "v=${x##+(a)}",
+        "ls !(x)",
+        "true && echo ?(x)",
+        "echo $(a) !(x)",
+        "echo `a` !(x)",
+    ] {
+        assert!(
+            !has_any(text, &[SyntaxKind::LParen, SyntaxKind::Pipe]),
+            "{text}: {:?}",
+            tokens(text)
+        );
+    }
+    let spaces = tokens("echo @(a b|c)")
+        .into_iter()
+        .filter(|(kind, _)| *kind == SyntaxKind::Whitespace)
+        .count();
+    assert_eq!(spaces, 1, "the space inside the group is the pattern's");
+}
+
+/// `!(` where a command can start is `!` and a subshell; a `case` pattern is not a command.
+#[test]
+fn a_negated_subshell_stays_one() {
+    for text in [
+        "!(echo hi)",
+        "true && !(false)",
+        "if !(false); then :; fi",
+        "x | !(y)",
+    ] {
+        assert!(
+            has_any(text, &[SyntaxKind::LParen]),
+            "{text}: {:?}",
+            tokens(text)
+        );
+    }
+    for text in [
+        "case y in !(x)) ;; esac",
+        "case y in\n!(x)) ;;\n!(z)) ;; esac",
+    ] {
+        let opens = tokens(text)
+            .into_iter()
+            .filter(|(kind, _)| *kind == SyntaxKind::LParen)
+            .count();
+        assert_eq!(opens, 0, "{text}: {:?}", tokens(text));
+    }
+}
+
 /// Shell that has given lexers trouble, plus the ordinary cases.
 const SCRIPTS: &[&str] = &[
     "",
@@ -500,5 +558,57 @@ fn a_lone_dollar_is_just_a_character() {
     assert_eq!(
         tokens("5$"),
         [(SyntaxKind::Text, "5"), (SyntaxKind::Dollar, "$")]
+    );
+}
+
+/// A here-document whose terminator line carries the closing backquote.
+///
+/// The old form is read by finding its matching backquote and parsing what lies between, so the
+/// delimiter line of ``x=`cat <<E … E` `` is `E` and the backquote belongs to the substitution
+/// around it. Compared strictly the line spells ``E` ``, nothing matched, and the body ran to the
+/// end of the file.
+#[test]
+fn a_heredoc_terminator_may_carry_a_closing_backquote() {
+    let text = "x=`cat <<E\nbody\nE`\n";
+    let lexing = lex(text);
+    let total: u32 = lexing.tokens.iter().map(|t| t.len).sum();
+    assert_eq!(
+        total as usize,
+        text.len(),
+        "the tokens must cover the input"
+    );
+    assert!(
+        lexing.unclosed.is_empty(),
+        "nothing was left open: {:?}",
+        lexing.unclosed
+    );
+    assert!(
+        lexing
+            .tokens
+            .iter()
+            .any(|t| t.kind == SyntaxKind::HeredocEnd),
+        "the terminator was never found"
+    );
+}
+
+/// The ordinary spellings are untouched: a backquote on its own line, and no backquote at all.
+#[test]
+fn an_ordinary_heredoc_terminator_is_unchanged() {
+    for text in ["x=`cat <<E\nbody\nE\n`\n", "cat <<E\nbody\nE\n"] {
+        let lexing = lex(text);
+        let total: u32 = lexing.tokens.iter().map(|t| t.len).sum();
+        assert_eq!(total as usize, text.len(), "{text:?}");
+        assert!(lexing.unclosed.is_empty(), "{text:?}");
+    }
+    // A line that merely starts with the delimiter is body, not a terminator.
+    let text = "cat <<E\nEx\nE\n";
+    let lexing = lex(text);
+    assert!(lexing.unclosed.is_empty());
+    assert!(
+        lexing
+            .tokens
+            .iter()
+            .any(|t| t.kind == SyntaxKind::HeredocText),
+        "the body went missing"
     );
 }
