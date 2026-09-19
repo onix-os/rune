@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.5] - 2026-09-19
+
+### <!-- 0 -->⛰️  Features
+
+- Read extglob groups as part of words
+
+## [0.1.4] - 2026-09-10
+
 ## [0.1.4] - 2026-09-10
 
 ### <!-- 1 -->🐛 Bug Fixes
