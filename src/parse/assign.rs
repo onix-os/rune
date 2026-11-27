@@ -36,27 +36,115 @@ fn split_assignment(text: &str) -> Option<(u32, u32, SyntaxKind)> {
     None
 }
 
+/// Whether `text` is a name and nothing else.
+fn is_name(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_alphanumeric() || ch == '_')
+}
+
 impl Parser<'_> {
     pub(super) fn at_assignment(&self) -> bool {
         let Some(index) = self.significant(0) else {
             return false;
         };
         self.tokens[index].kind == SyntaxKind::Text
-            && split_assignment(self.token_text(index)).is_some()
+            && (split_assignment(self.token_text(index)).is_some()
+                || self.split_subscript(index).is_some())
+    }
+
+    /// Where the operator is in an assignment whose subscript the lexer read in pieces.
+    ///
+    /// `a[$i]=x` is a name, a subscript the lexer opened with [`SyntaxKind::LBracket`] and closed
+    /// with the matching [`SyntaxKind::RBracket`], and a run starting `=` or `+=`. The answer is
+    /// the index of that run, the operator's length, and which operator it is.
+    fn split_subscript(&self, index: usize) -> Option<(usize, u32, SyntaxKind)> {
+        if !is_name(self.token_text(index))
+            || self.tokens.get(index + 1)?.kind != SyntaxKind::LBracket
+        {
+            return None;
+        }
+        let mut depth = 0u32;
+        for at in index + 1..self.tokens.len() {
+            match self.tokens[at].kind {
+                SyntaxKind::LBracket => depth += 1,
+                SyntaxKind::RBracket => {
+                    depth -= 1;
+                    if depth > 0 {
+                        continue;
+                    }
+                    let after = at + 1;
+                    if self.tokens.get(after)?.kind != SyntaxKind::Text {
+                        return None;
+                    }
+                    let text = self.token_text(after);
+                    if text.starts_with("+=") {
+                        return Some((after, 2, SyntaxKind::PlusEqual));
+                    }
+                    return text
+                        .starts_with('=')
+                        .then_some((after, 1, SyntaxKind::Equal));
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     pub(super) fn assignment(&mut self) {
         let Some(index) = self.significant(0) else {
             return;
         };
-        let Some((name_len, op_len, op_kind)) = split_assignment(self.token_text(index)) else {
+        let text = self.token_text(index);
+        if let Some((name_len, op_len, op_kind)) = split_assignment(text) {
+            let rest = self.tokens[index].len.saturating_sub(name_len + op_len);
+            self.start(SyntaxKind::Assignment);
+            self.name_slices(text.get(..name_len as usize).unwrap_or(""));
+            self.bump_slice(op_kind, op_len);
+            self.assignment_value(rest);
+            self.finish_node();
+            return;
+        }
+        let Some((operator, op_len, op_kind)) = self.split_subscript(index) else {
             return;
         };
-        let rest = self.tokens[index].len.saturating_sub(name_len + op_len);
-
         self.start(SyntaxKind::Assignment);
-        self.bump_slice(SyntaxKind::Text, name_len);
+        self.bump();
+        self.open(SyntaxKind::Subscript);
+        while self.progress() < operator {
+            self.word_piece();
+        }
+        self.finish_node();
+        let rest = self.tokens[operator].len.saturating_sub(op_len);
         self.bump_slice(op_kind, op_len);
+        self.assignment_value(rest);
+        self.finish_node();
+    }
+
+    /// The name, and the subscript if one was written in the same run: the `b` and `[3]` of
+    /// `b[3]=z`. Either way a subscript is a node of its own, so the name is only ever a name.
+    fn name_slices(&mut self, name: &str) {
+        match name.find('[') {
+            Some(open) if name.ends_with(']') => {
+                let inner = name.len() - open - 2;
+                self.bump_slice(SyntaxKind::Text, open as u32);
+                self.open(SyntaxKind::Subscript);
+                self.bump_slice(SyntaxKind::LBracket, 1);
+                self.bump_slice(SyntaxKind::Text, inner as u32);
+                self.bump_slice(SyntaxKind::RBracket, 1);
+                self.finish_node();
+            }
+            _ => self.bump_slice(SyntaxKind::Text, name.len() as u32),
+        }
+    }
+
+    /// The value, once the operator has been taken from the token it is in.
+    ///
+    /// `rest` is how much of that token is left over, which is where a value written straight
+    /// after the operator begins.
+    fn assignment_value(&mut self, rest: u32) {
         if rest > 0 {
             // The value began inside the same token, so the word has to be opened around it.
             self.open(SyntaxKind::Word);
@@ -76,7 +164,6 @@ impl Parser<'_> {
                 self.finish_node();
             }
         }
-        self.finish_node();
     }
 
     /// `(a b c)` on the right of an assignment.

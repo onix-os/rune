@@ -110,12 +110,17 @@ impl<'a> SimpleCommand<'a> {
 }
 
 impl<'a> Assignment<'a> {
-    /// The name on the left of the operator.
+    /// The name on the left of the operator, without any subscript.
     pub fn name(self, source: &Source) -> &str {
         self.0
             .tokens()
             .find(|token| token.kind() == SyntaxKind::Text)
             .map_or("", |token| token.text(source))
+    }
+
+    /// The `[…]` of `a[i]=x`, brackets included, when the assignment is to one element.
+    pub fn subscript(self) -> Option<&'a Node> {
+        self.0.node(SyntaxKind::Subscript)
     }
 
     /// `=` or `+=`.

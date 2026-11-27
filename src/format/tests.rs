@@ -215,6 +215,17 @@ fn a_script_that_will_not_parse_is_refused() {
     assert!(format("case $x in").is_err());
 }
 
+/// A `{ … }` loop body keeps the separator that lets bash read its `{` as reserved.
+#[test]
+fn a_brace_body_after_a_loop_header_stays_a_body() {
+    holds("for i in 1 2; { echo $i; }", "for i in 1 2; { echo $i; }\n");
+    holds("for x\n{ echo $x; }", "for x; { echo $x; }\n");
+    holds(
+        "for x\nin a b; do echo $x; done",
+        "for x in a b; do\n    echo $x\ndone\n",
+    );
+}
+
 /// The layout is a setting, not a fact about shell.
 #[test]
 fn the_indentation_can_be_said_out_loud() {

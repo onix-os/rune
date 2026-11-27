@@ -14,6 +14,8 @@ mod cond;
 mod redirect;
 mod word;
 
+pub(crate) use compound::opens_paren;
+
 use crate::error::Completeness;
 use crate::error::Error;
 use crate::lex::{Lexed, Unclosed, lex};
@@ -138,16 +140,23 @@ impl<'a> Parser<'a> {
                 continue;
             }
             let width = open.opener.len() as u32;
-            self.errors.push(
-                Error::new(
-                    Span::new(open.at, open.at + width),
-                    format!("this `{}` was never closed", open.opener),
-                )
-                .opened_at(Span::new(open.at, open.at + width))
-                // The reader ran to the end of the input looking for the closer, so another line
-                // is exactly what would finish it.
-                .unfinished(),
-            );
+            let error = Error::new(
+                Span::new(open.at, open.at + width),
+                format!("this `{}` was never closed", open.opener),
+            )
+            .opened_at(Span::new(open.at, open.at + width))
+            // The reader ran to the end of the input looking for the closer, so another line
+            // is exactly what would finish it.
+            .unfinished();
+            // A here-document the input ends inside is one bash runs: it warns, and the body is
+            // everything up to the end. Still unfinished, so a prompt reads on for the delimiter.
+            self.errors.push(match open.opener {
+                "<<" => Error {
+                    message: "this here-document was delimited by the end of the input".into(),
+                    ..error.warning()
+                },
+                _ => error,
+            });
         }
         self.errors.sort_by_key(|error| error.span.start);
         // One broken construct, one message. The rules bail out rather than ask twice, but a
@@ -433,5 +442,7 @@ impl<'a> Parser<'a> {
     }
 }
 
+#[cfg(test)]
+mod bash_tests;
 #[cfg(test)]
 mod tests;

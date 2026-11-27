@@ -81,7 +81,10 @@ impl Parser<'_> {
         self.finish_node();
     }
 
+    /// A term, which may begin after newlines: the test is a compound command, and bash skips
+    /// them before every term and after every complete one. `[[ -n $a⏎&& -n $b ]]` is one test.
     fn cond_not(&mut self) {
+        self.skip_newlines();
         if !self.at_word_exactly("!") {
             return self.cond_primary();
         }
@@ -102,6 +105,7 @@ impl Parser<'_> {
                 self.error("this `(` was never closed");
             }
             self.finish_node();
+            self.skip_newlines();
             return;
         }
 
@@ -114,6 +118,7 @@ impl Parser<'_> {
                 self.error("this test needs something to test");
             }
             self.finish_node();
+            self.skip_newlines();
             return;
         }
 
@@ -130,35 +135,49 @@ impl Parser<'_> {
         self.start(SyntaxKind::CondWord);
         self.word();
         self.finish_node();
+        // A bare word is a test of its own, and bash takes nothing after it but an operator or
+        // the end: `[[ a⏎]]` is an error there, so the newline is left for `]]` to trip over.
         if let Some(operator) = self.at_binary() {
+            let regex = self.peek_text(0) == "=~";
             self.start_at(start, SyntaxKind::CondBinary);
             self.bump_as(operator);
-            self.right_operand();
+            self.right_operand(regex);
             self.finish_node();
+            self.skip_newlines();
         }
     }
 
-    /// The operand on the right of a comparison: everything up to the next space.
+    /// The operand on the right of a comparison: one word.
     ///
-    /// It cannot be read as an ordinary word, because a regex owns the punctuation a word would
-    /// give away. In `[[ $x =~ ^(cat|dog)$ ]]` the parentheses group *the regex*, and reading them
-    /// as the grammar's own grouping loses the operand and then the `]]` with it. Whatever is
-    /// written without a space in it is one operand, whatever it is made of.
-    fn right_operand(&mut self) {
+    /// A regex owns punctuation a word would give away. In `[[ $x =~ ^(cat|dog)$ ]]` the
+    /// parentheses group *the regex*, and in `=~ (^| )$c( |$)` the spaces inside them are its
+    /// own. The lexer reads that operand as a run of text, so it arrives as one word; the
+    /// parentheses and `|` taken here are for a regex the lexer did not see as one.
+    ///
+    /// A `)` with nothing of the operand's own to close is not part of it: in
+    /// `[[ x && (a == a) ]]` it closes the group the comparison is in.
+    fn right_operand(&mut self, regex: bool) {
         self.skip_trivia();
-        if self.at_cond_end() {
+        if self.at_cond_end() || self.raw() == Some(SyntaxKind::Newline) {
             self.error("this comparison has nothing on its right");
             return;
         }
         self.start(SyntaxKind::CondWord);
+        let mut depth = 0u32;
         while let Some(kind) = self.raw() {
-            if kind.is_trivia() || kind == SyntaxKind::Newline {
-                break;
-            }
-            if kind.is_word_piece() {
-                self.word_piece();
-            } else {
-                self.bump_raw();
+            match kind {
+                _ if kind.is_word_piece() => self.word_piece(),
+                SyntaxKind::LParen if regex => {
+                    depth += 1;
+                    self.bump_raw();
+                }
+                SyntaxKind::RParen if regex && depth > 0 => {
+                    depth -= 1;
+                    self.bump_raw();
+                }
+                SyntaxKind::Pipe if regex => self.bump_raw(),
+                _ if regex && depth > 0 => self.bump_raw(),
+                _ => break,
             }
         }
         self.finish_node();

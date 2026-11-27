@@ -5,7 +5,7 @@
 //! adjacent `(` and decides. Braces are missing for the same reason — `{` is a reserved word, and
 //! `a{b,c}` is one ordinary word containing two of them.
 
-use super::Lexer;
+use super::{Lexer, Mode};
 use crate::tree::SyntaxKind;
 
 /// Longest match first: `<<-` must be tried before `<<`, and `<<` before `<`.
@@ -45,11 +45,16 @@ impl Lexer<'_> {
         // `<(cmd)` is a word, not a redirection: it expands to the name of a pipe, and `diff <(a)
         // <(b)` passes `diff` two ordinary arguments. The parenthesis has to be touching — with a
         // space, `<` is a redirection and bash rejects what follows.
-        if self.cursor.eat("<(") {
-            return SyntaxKind::ProcSubIn;
-        }
-        if self.cursor.eat(">(") {
-            return SyntaxKind::ProcSubOut;
+        //
+        // What is inside is a script, read the way `$( … )` is, and the word goes on after it.
+        for (text, kind) in [
+            ("<(", SyntaxKind::ProcSubIn),
+            (">(", SyntaxKind::ProcSubOut),
+        ] {
+            if self.cursor.eat(text) {
+                self.push_mode(Mode::CommandSub { depth: 0, cases: 0 });
+                return kind;
+            }
         }
         for (text, kind) in OPERATORS {
             if self.cursor.eat(text) {

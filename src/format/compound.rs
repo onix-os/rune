@@ -82,6 +82,12 @@ impl Fmt<'_> {
                             started_body = true;
                             self.case_item(arm);
                         }
+                        // A `{ … }` body in place of `do … done`, ending the header the same way.
+                        Element::Node(body) if body.kind() == K::Group => {
+                            self.out.push(";");
+                            self.out.space();
+                            self.bracketed(body, K::LBrace, K::RBrace);
+                        }
                         Element::Node(list) if list.kind() == K::CommandList => {
                             let layout = match in_body {
                                 true => Layout::Block,

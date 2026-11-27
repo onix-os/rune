@@ -8,14 +8,21 @@
 //! be tokenized without that split: the same letters are a keyword or a filename depending on
 //! where they appear, and only the grammar knows where it is.
 
+mod cond;
 mod cursor;
+mod enclosed;
 mod expand;
 mod heredoc;
 mod operator;
+mod position;
+mod subscript;
+mod unquote;
 mod word;
 
 use crate::tree::SyntaxKind;
+use cond::CondState;
 use cursor::Cursor;
+pub use enclosed::enclosed;
 use heredoc::Heredoc;
 
 /// One token: what it is, and how many bytes of source it takes up.
@@ -76,9 +83,12 @@ pub(crate) enum Mode {
     DoubleQuoted,
     /// Inside `${...}`.
     Brace { stage: BraceStage },
-    /// Inside `$((...))`, counting nested parentheses to find the end.
-    Arithmetic { depth: i32 },
-    /// Inside `$(...)`, counting parentheses to find the one that closes it.
+    /// Inside `$((...))` or an `((...))` command, counting nested parentheses to find the end.
+    ///
+    /// `command` is the second: what follows its `))` is a new word. Its depth starts at -1,
+    /// because the second `(` of the opener has still to be read.
+    Arithmetic { depth: i32, command: bool },
+    /// Inside `$(...)`, `<(...)` or `>(...)`, counting parentheses to find the one that closes it.
     ///
     /// A command substitution holds ordinary shell wherever it appears, so this has to be a mode
     /// of its own rather than a continuation of the one around it: in `"$(ls)"` the quoting stops
@@ -97,6 +107,12 @@ pub(crate) enum Mode {
     /// The group is part of the word it is in, spaces and `|` included, so it cannot be read in
     /// normal mode, where both end a word. Quotes and expansions inside keep their meaning.
     ExtGlob { depth: i32 },
+    /// Inside `[[ ... ]]`: ordinary shell, except for the operand of `=~` and a leading `!(`.
+    Cond(CondState),
+    /// The operand of `=~`, where a parenthesised group is the regex's own, spaces and all.
+    Regex { depth: i32 },
+    /// The subscript of an assignment, `a[$i + 1]=x`, which runs to its matching `]`.
+    Subscript { depth: i32 },
 }
 
 impl Mode {
@@ -106,11 +122,19 @@ impl Mode {
             Self::Normal => "",
             Self::DoubleQuoted => "\"",
             Self::Brace { .. } => "${",
-            Self::Arithmetic { .. } => "$((",
+            Self::Arithmetic { command: false, .. } => "$((",
+            Self::Arithmetic { command: true, .. } => "((",
             Self::CommandSub { .. } => "$(",
             Self::Backtick => "`",
-            Self::ExtGlob { .. } => "(",
+            Self::ExtGlob { .. } | Self::Regex { .. } => "(",
+            Self::Cond(_) => "[[",
+            Self::Subscript { .. } => "[",
         }
+    }
+
+    /// Whether this mode holds ordinary shell, read a command at a time.
+    const fn holds_commands(self) -> bool {
+        matches!(self, Self::CommandSub { .. } | Self::Backtick)
     }
 }
 
@@ -134,6 +158,8 @@ pub(crate) struct Lexer<'a> {
     /// `#` opens a comment only here, and `~` names a home directory only here: `echo a#b` prints
     /// `a#b`, and `echo a~b` is not a path.
     pub(crate) at_word_start: bool,
+    /// Set by a token that closes a substitution: the word it sits in goes on after it.
+    continues_word: bool,
     /// Whether the next word would begin a command.
     ///
     /// Starts true: the first thing in a script, and inside a `$(`, is a command. Asked inside a
@@ -145,6 +171,16 @@ pub(crate) struct Lexer<'a> {
     /// A pattern follows a newline too, where a command could otherwise start, so `!(x))` there is
     /// a group rather than a negated subshell.
     pattern_next: bool,
+    /// Whether a word starting here could be an assignment: at a command start, or after one.
+    assign_ok: bool,
+    /// Whether the word being read looks like an assignment, so the next one may be one too.
+    word_assigns: bool,
+    /// [`Self::word_assigns`] of each word a substitution interrupted, innermost last.
+    saved_assigns: Vec<bool>,
+    /// Set when a name has just been read whose `[` opens an assignment subscript.
+    subscript_next: bool,
+    /// Whether the last word was a `for` at a command start, so a `((` next is its header.
+    for_next: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -160,40 +196,27 @@ impl<'a> Lexer<'a> {
             awaiting_delimiter: None,
             delimiter_text: String::new(),
             at_word_start: true,
+            continues_word: false,
             command_can_start: true,
             pattern_next: false,
+            assign_ok: true,
+            word_assigns: false,
+            saved_assigns: Vec::new(),
+            subscript_next: false,
+            for_next: false,
         }
     }
 
     fn run(mut self) -> Lexing {
-        let source: &'a str = self.text;
         while !self.cursor.is_eof() {
-            let start = self.cursor.offset();
-            self.token_start = start;
-            let mut kind = self.token();
-            if self.cursor.offset() == start {
-                // A branch that consumed nothing would spin here forever. Take a character and
-                // call it unknown; the parser reports it and carries on.
-                self.cursor.bump();
-                kind = SyntaxKind::Unknown;
-            }
-            let end = self.cursor.offset();
-            self.emit(kind, end - start);
-
-            let text = source.get(start as usize..end as usize).unwrap_or("");
-            self.collect_delimiter(kind, text);
-            match kind {
-                SyntaxKind::LessLess => self.expect_delimiter(false),
-                SyntaxKind::LessLessDash => self.expect_delimiter(true),
-                SyntaxKind::Newline => {
-                    self.finish_delimiter();
-                    self.take_heredoc_bodies();
-                }
-                _ => {}
-            }
+            self.step();
         }
-        // Whatever is still on the stack was opened and never closed.
+        // Whatever is still on the stack was opened and never closed. A `[[` is the parser's to
+        // report: it decided the test was one, and it knows where it began.
         for (mode, at) in self.modes.iter().skip(1) {
+            if matches!(mode, Mode::Cond(_)) {
+                continue;
+            }
             self.unclosed.push(Unclosed {
                 opener: mode.opener(),
                 at: *at,
@@ -206,10 +229,43 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Read one token, emit it, and keep the here-document bookkeeping true to it.
+    fn step(&mut self) -> SyntaxKind {
+        let start = self.cursor.offset();
+        self.token_start = start;
+        let mut kind = self.token();
+        if self.cursor.offset() == start {
+            // A branch that consumed nothing would spin here forever. Take a character and
+            // call it unknown; the parser reports it and carries on.
+            self.cursor.bump();
+            kind = SyntaxKind::Unknown;
+        }
+        let end = self.cursor.offset();
+        self.emit(kind, end - start);
+
+        let text = self.token_text();
+        self.collect_delimiter(kind, text);
+        match kind {
+            SyntaxKind::LessLess => self.expect_delimiter(false),
+            SyntaxKind::LessLessDash => self.expect_delimiter(true),
+            SyntaxKind::Newline => {
+                self.finish_delimiter();
+                self.take_heredoc_bodies();
+            }
+            _ => {}
+        }
+        kind
+    }
+
     fn token(&mut self) -> SyntaxKind {
         match self.mode() {
             Mode::DoubleQuoted => self.quoted_piece(),
             Mode::Brace { stage } => self.brace_piece(stage),
+            Mode::Arithmetic { depth: -1, .. } => {
+                self.cursor.bump();
+                self.bump_arith_depth(1);
+                SyntaxKind::LParen
+            }
             Mode::Arithmetic { .. } => {
                 if self.cursor.peek() == Some(')') {
                     return self.close_arithmetic();
@@ -222,6 +278,7 @@ impl<'a> Lexer<'a> {
                     let closes = depth == 0 && cases == 0;
                     if closes {
                         self.pop_mode();
+                        self.continues_word = true;
                     } else if depth > 0 {
                         self.bump_sub_depth(-1);
                     }
@@ -230,6 +287,9 @@ impl<'a> Lexer<'a> {
                     // own `)` is the other way round: the word it was in goes on. This branch
                     // returns early, so it has to say so itself.
                     self.command_can_start = !closes;
+                    if !closes {
+                        self.assign_ok = true;
+                    }
                     // With a `case` open and nothing else nested, this closed a pattern and the
                     // substitution is still going: neither counter moves.
                     return SyntaxKind::RParen;
@@ -238,35 +298,58 @@ impl<'a> Lexer<'a> {
                 // `x=$(case …)` the `$(` is a piece of the word `x=$(…)`, so it reads false for the
                 // very first token inside, which is exactly where a `case` most often is.
                 let at_command_start = self.command_can_start;
-                let started_at = self.token_start;
-                let kind = self.normal_token();
-                // Anything that opens a parenthesis owes a `)` that is not the closing one.
-                if matches!(
-                    kind,
-                    SyntaxKind::LParen | SyntaxKind::ProcSubIn | SyntaxKind::ProcSubOut
-                ) {
+                let kind = self.command_token();
+                // Anything that opens a parenthesis owes a `)` that is not the closing one. A
+                // process substitution opens a mode of its own, which counts for itself.
+                if kind == SyntaxKind::LParen {
                     self.bump_sub_depth(1);
                 }
-                let text = self
-                    .text
-                    .get(started_at as usize..self.cursor.offset() as usize)
-                    .unwrap_or("");
-                self.note_position(kind, text);
+                let text = self.token_text();
                 self.note_case_word(text, at_command_start);
                 kind
             }
             Mode::ExtGlob { depth } => self.extglob_piece(depth),
-            Mode::Normal | Mode::Backtick => {
-                let started_at = self.token_start as usize;
-                let kind = self.normal_token();
-                let text = self
-                    .text
-                    .get(started_at..self.cursor.offset() as usize)
-                    .unwrap_or("");
-                self.note_position(kind, text);
-                kind
-            }
+            Mode::Cond(state) => self.cond_token(state),
+            Mode::Regex { depth } => self.regex_piece(depth),
+            Mode::Subscript { depth } => self.subscript_piece(depth),
+            Mode::Normal | Mode::Backtick => self.command_token(),
         }
+    }
+
+    /// A token of ordinary shell, with the position bookkeeping that follows from it.
+    fn command_token(&mut self) -> SyntaxKind {
+        let opens_test = self.command_can_start && !self.pattern_next;
+        let word_start = self.at_word_start;
+        // `((` where a command can start, or after `for`, is arithmetic when its parentheses
+        // close together — read as arithmetic, so `((x = 1 << 2))` holds no here-document.
+        if (opens_test || self.for_next) && self.cursor.starts_with("((") && self.arithmetic_ahead()
+        {
+            self.cursor.bump();
+            self.push_mode(Mode::Arithmetic {
+                depth: -1,
+                command: true,
+            });
+            self.for_next = false;
+            return SyntaxKind::LParen;
+        }
+        let kind = self.normal_token();
+        let text = self.token_text();
+        self.note_position(kind, text, word_start);
+        if kind == SyntaxKind::Text && word_start && opens_test && text == "[[" {
+            self.open_test();
+        }
+        if !kind.is_trivia() {
+            self.for_next = kind == SyntaxKind::Text && word_start && opens_test && text == "for";
+        }
+        kind
+    }
+
+    /// The text of the token being read, from where it started to the cursor.
+    fn token_text(&self) -> &'a str {
+        let source: &'a str = self.text;
+        source
+            .get(self.token_start as usize..self.cursor.offset() as usize)
+            .unwrap_or("")
     }
 
     fn normal_token(&mut self) -> SyntaxKind {
@@ -293,6 +376,13 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Whether the word just read ends here: what follows is a blank, an operator or nothing.
+    pub(crate) fn word_ends_here(&self) -> bool {
+        self.cursor
+            .peek()
+            .is_none_or(|ch| matches!(ch, ' ' | '\t' | '\r' | '\n') || operator::starts_one(ch))
+    }
+
     pub(crate) fn mode(&self) -> Mode {
         self.modes.last().map_or(Mode::Normal, |(mode, _)| *mode)
     }
@@ -307,9 +397,12 @@ impl<'a> Lexer<'a> {
 
     pub(crate) fn push_mode(&mut self, mode: Mode) {
         // The first thing inside a command substitution is a command, wherever its `$(` was.
-        if matches!(mode, Mode::CommandSub { .. } | Mode::Backtick) {
+        if mode.holds_commands() {
             self.command_can_start = true;
             self.pattern_next = false;
+            self.saved_assigns.push(self.word_assigns);
+            self.assign_ok = true;
+            self.word_assigns = false;
         }
         self.modes.push((mode, self.token_start));
     }
@@ -326,8 +419,11 @@ impl<'a> Lexer<'a> {
 
     /// Leave the innermost mode. The outermost cannot be left.
     pub(crate) fn pop_mode(&mut self) {
-        if self.modes.len() > 1 {
-            self.modes.pop();
+        if self.modes.len() > 1
+            && let Some((mode, _)) = self.modes.pop()
+            && mode.holds_commands()
+        {
+            self.word_assigns = self.saved_assigns.pop().unwrap_or(false);
         }
     }
 
@@ -339,19 +435,24 @@ impl<'a> Lexer<'a> {
 
     pub(crate) fn arith_depth(&self) -> i32 {
         match self.mode() {
-            Mode::Arithmetic { depth } => depth,
+            Mode::Arithmetic { depth, .. } => depth,
             _ => 0,
         }
     }
 
     pub(crate) fn bump_arith_depth(&mut self, by: i32) {
-        if let Some((Mode::Arithmetic { depth }, _)) = self.modes.last_mut() {
+        if let Some((Mode::Arithmetic { depth, .. }, _)) = self.modes.last_mut() {
             *depth = depth.saturating_add(by).max(0);
         }
     }
 
-    pub(crate) fn set_extglob_depth(&mut self, to: i32) {
-        if let Some((Mode::ExtGlob { depth }, _)) = self.modes.last_mut() {
+    /// Set the depth of the innermost mode that counts its own brackets.
+    pub(crate) fn set_depth(&mut self, to: i32) {
+        if let Some((
+            Mode::ExtGlob { depth } | Mode::Regex { depth } | Mode::Subscript { depth },
+            _,
+        )) = self.modes.last_mut()
+        {
             *depth = to;
         }
     }
@@ -366,87 +467,17 @@ impl<'a> Lexer<'a> {
         // A word runs on while its pieces are adjacent; trivia and operators end it. A line
         // continuation is neither: the shell removes it, so `ab\<newline>cd` is the one word
         // `abcd` and the `#` in `ab\<newline>#c` is not a comment.
+        //
+        // A substitution holds commands, so its first word starts inside it; the word around it
+        // goes on after the token that closes it. `$(# note)` is a comment, `$((1))#x` is one word.
         if kind != SyntaxKind::LineContinuation {
-            self.at_word_start = !kind.is_word_piece();
+            let continues = std::mem::take(&mut self.continues_word);
+            self.at_word_start = match kind {
+                SyntaxKind::DollarParen | SyntaxKind::ProcSubIn | SyntaxKind::ProcSubOut => true,
+                _ => !kind.is_word_piece() && !continues,
+            };
         }
         self.out.push(Lexed { kind, len });
-    }
-
-    /// Whether a word starting here would be the first word of a command.
-    ///
-    /// Only ever an approximation, and only used to decide whether a `case` is the keyword — see
-    /// [`Self::note_case_word`]. Everything listed ends a command, so what follows begins one.
-    /// Whether a token of this kind and text leaves a place where a command can begin after it.
-    ///
-    /// **The reserved words are checked by text, because to the lexer they are not reserved.** `{`,
-    /// `do` and `then` all arrive as `Text` — the tree shows `LBrace` because the *parser* decides
-    /// that, long after this runs — so a rule written on kinds alone saw `f() { case …` as a `case`
-    /// in the middle of a command and did not count it.
-    fn ends_a_command(kind: SyntaxKind, text: &str) -> bool {
-        matches!(
-            kind,
-            SyntaxKind::Newline
-                | SyntaxKind::Semi
-                | SyntaxKind::SemiSemi
-                | SyntaxKind::SemiAmp
-                | SyntaxKind::SemiSemiAmp
-                | SyntaxKind::Amp
-                | SyntaxKind::AndAnd
-                | SyntaxKind::PipePipe
-                | SyntaxKind::Pipe
-                | SyntaxKind::PipeAmp
-                | SyntaxKind::LParen
-                // A `case` *pattern* ends with one, and the item's body begins after it — which is
-                // how a `case` nested directly inside another one is counted.
-                | SyntaxKind::RParen
-                | SyntaxKind::DollarParen
-                | SyntaxKind::Backtick
-        ) || matches!(
-            text,
-            "{" | "do" | "then" | "else" | "elif" | "!" | "if" | "while" | "until" | "time"
-        )
-    }
-
-    /// Keep [`Self::command_can_start`] and [`Self::pattern_next`] true to the token just read.
-    fn note_position(&mut self, kind: SyntaxKind, text: &str) {
-        match kind {
-            _ if kind.is_trivia() => {}
-            SyntaxKind::Newline => self.command_can_start = true,
-            // A closing backtick ends a substitution inside a word, and the word goes on.
-            SyntaxKind::Backtick if self.mode() != Mode::Backtick => self.command_can_start = false,
-            SyntaxKind::SemiSemi | SyntaxKind::SemiAmp | SyntaxKind::SemiSemiAmp => {
-                self.command_can_start = true;
-                self.pattern_next = true;
-            }
-            // `case x in (a) …` — the optional opening parenthesis still leads to a pattern.
-            SyntaxKind::LParen if self.pattern_next => self.command_can_start = true,
-            _ => {
-                self.command_can_start = Self::ends_a_command(kind, text);
-                self.pattern_next = kind == SyntaxKind::Text && text == "in";
-            }
-        }
-    }
-
-    /// Count a `case` that opened or closed inside a command substitution.
-    ///
-    /// **Position matters for `case` and not for `esac`.** `"$(echo case)"` must still close where
-    /// it closes, so the opener counts only where a command can begin; `esac` is asked for only
-    /// when a `case` is already open, so a word of that spelling anywhere else cannot take one
-    /// away. Neither is a reserved word to the lexer — the parser decides that — so this is a
-    /// count kept for the sole purpose of knowing whether a `)` closes a pattern or a
-    /// substitution.
-    fn note_case_word(&mut self, text: &str, at_command_start: bool) {
-        match text {
-            "case" if at_command_start => self.bump_sub_cases(1),
-            "esac" => self.bump_sub_cases(-1),
-            _ => {}
-        }
-    }
-
-    fn bump_sub_cases(&mut self, by: i32) {
-        if let Some((Mode::CommandSub { cases, .. }, _)) = self.modes.last_mut() {
-            *cases = cases.saturating_add(by).max(0);
-        }
     }
 }
 

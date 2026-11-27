@@ -157,14 +157,15 @@ impl Parser<'_> {
 
     /// `! time a | b`. Also only wrapped when there is something to wrap.
     ///
-    /// The two prefixes come in either order — `time ! false` is as good as `! time false` — and
-    /// each at most once, which is what stops `! !` from being read as a doubly negated nothing.
+    /// The two prefixes come in either order — `time ! false` is as good as `! time false`. `!`
+    /// may come more than once, and each one turns the status round again, as in bash: `! !
+    /// false` fails. `time` is taken once.
     fn pipeline(&mut self) {
         let start = self.checkpoint();
         let mut negated = false;
         let mut timed = false;
         loop {
-            if !negated && self.at_word_exactly("!") {
+            if self.at_word_exactly("!") {
                 self.bump_as(SyntaxKind::Bang);
                 negated = true;
                 continue;
