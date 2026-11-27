@@ -102,6 +102,28 @@ impl Fmt<'_> {
         }
     }
 
+    /// `coproc [NAME] command`: the keyword and the name a space apart, then the command.
+    pub(super) fn coproc(&mut self, node: &Node) {
+        for child in node.children() {
+            match child.kind() {
+                K::Whitespace | K::LineContinuation | K::Newline => {}
+                K::Comment => self.comment(child.span()),
+                K::HeredocText | K::HeredocEnd => self.heredoc(child.span()),
+                K::Word => {
+                    self.token(child.span());
+                    self.out.space();
+                }
+                _ => match child {
+                    Element::Node(command) => self.command(command),
+                    token => {
+                        self.verbatim(token);
+                        self.out.space();
+                    }
+                },
+            }
+        }
+    }
+
     /// `2>&1`, `>file`, `<<EOF` — written as one piece.
     ///
     /// **Glued, because the space is where the meaning goes.** `2 >&1` is a command taking `2` as an

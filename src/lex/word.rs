@@ -71,6 +71,10 @@ impl Lexer<'_> {
     /// a mode rather than emitting a character and carrying on.
     fn backtick(&mut self) -> SyntaxKind {
         self.cursor.bump();
+        // A `[[` left open inside one does not keep the backquote that closes it from closing.
+        while matches!(self.mode(), Mode::Cond(_)) && self.inside_backtick() {
+            self.pop_mode();
+        }
         if self.mode() == Mode::Backtick {
             self.pop_mode();
         } else {
@@ -109,6 +113,12 @@ impl Lexer<'_> {
     fn plain_text(&mut self) -> SyntaxKind {
         let in_brace = matches!(self.mode(), Mode::Brace { .. });
         let begins_word = self.at_word_start;
+        if self.open_subscript_bracket() {
+            return SyntaxKind::LBracket;
+        }
+        if begins_word && !in_brace && self.subscript_name(is_plain) {
+            return SyntaxKind::Text;
+        }
         let start = self.cursor.offset();
         self.cursor.bump();
         self.cursor
@@ -134,7 +144,8 @@ impl Lexer<'_> {
         match run.chars().last() {
             Some('?' | '*' | '+' | '@') => true,
             Some('!') => {
-                !(begins_word && run == "!" && self.command_can_start && !self.pattern_next)
+                let negates = (self.command_can_start && !self.pattern_next) || self.at_test_term();
+                !(begins_word && run == "!" && negates)
             }
             _ => false,
         }
@@ -150,13 +161,13 @@ impl Lexer<'_> {
                 if depth == 0 {
                     self.pop_mode();
                 } else {
-                    self.set_extglob_depth(depth - 1);
+                    self.set_depth(depth - 1);
                 }
                 SyntaxKind::Text
             }
             Some('(') => {
                 self.cursor.bump();
-                self.set_extglob_depth(depth + 1);
+                self.set_depth(depth + 1);
                 SyntaxKind::Text
             }
             Some('\'' | '"' | '\\' | '`' | '$') => self.word_piece(),

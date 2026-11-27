@@ -158,6 +158,8 @@ pub enum SyntaxKind {
     Subshell,
     Group,
     ArithCommand,
+    /// `coproc [NAME] command`: the keyword, a name only before a compound command, the command.
+    CoprocCommand,
     /// `[[ ... ]]`.
     CondCommand,
     /// `a || b` inside `[[ ]]`.

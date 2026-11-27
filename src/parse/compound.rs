@@ -9,6 +9,18 @@ use crate::error::Error;
 use crate::span::Span;
 use crate::tree::SyntaxKind;
 
+/// Whether a token opens a parenthesis that a later `)` closes.
+pub(crate) const fn opens_paren(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::LParen
+            | SyntaxKind::DollarParen
+            | SyntaxKind::DollarParenParen
+            | SyntaxKind::ProcSubIn
+            | SyntaxKind::ProcSubOut
+    )
+}
+
 impl Parser<'_> {
     /// Try to parse a compound command, and say whether there was one.
     pub(super) fn compound_command(&mut self) -> bool {
@@ -121,21 +133,7 @@ impl Parser<'_> {
         }
         self.start(SyntaxKind::ForCommand);
         self.bump_as(SyntaxKind::For);
-        if self.at_word() {
-            self.word();
-        } else {
-            self.error("`for` needs the name of a variable to set");
-        }
-        if self.eat_keyword(SyntaxKind::In) {
-            while self.at_word() {
-                self.word();
-            }
-        }
-        self.end_of_header();
-        if self.expect_keyword(SyntaxKind::Do, "for", opened_at) {
-            self.command_list_until(&[]);
-            self.expect_keyword(SyntaxKind::Done, "for", opened_at);
-        }
+        self.loop_header("for", opened_at);
         self.trailing_redirects();
         self.finish_node();
     }
@@ -145,44 +143,72 @@ impl Parser<'_> {
         let opened_at = self.position();
         self.start(SyntaxKind::SelectCommand);
         self.bump_as(SyntaxKind::Select);
-        if self.at_word() {
-            self.word();
-        } else {
-            self.error("`select` needs the name of a variable to set");
-        }
-        if self.eat_keyword(SyntaxKind::In) {
-            while self.at_word() {
-                self.word();
-            }
-        }
-        self.end_of_header();
-        if self.expect_keyword(SyntaxKind::Do, "select", opened_at) {
-            self.command_list_until(&[]);
-            self.expect_keyword(SyntaxKind::Done, "select", opened_at);
-        }
+        self.loop_header("select", opened_at);
         self.trailing_redirects();
         self.finish_node();
     }
 
-    /// `for ((init; cond; step)) do ... done`.
+    /// What follows `for` or `select`: the name, the words, and the body.
+    ///
+    /// Newlines may come before `in`. A `{ … }` body stands in for `do … done` once the header is
+    /// over, which needs a `;` or a newline before it: `for x in a; { … }` is bash, and in
+    /// `for x { … }` the `{` is not reserved and the line does not parse.
+    fn loop_header(&mut self, opener: &str, opened_at: u32) {
+        if self.at_word() {
+            self.word();
+        } else {
+            self.error(format!("`{opener}` needs the name of a variable to set"));
+        }
+        let mut separated = false;
+        while self.at(SyntaxKind::Newline) {
+            self.bump();
+            separated = true;
+        }
+        if self.eat_keyword(SyntaxKind::In) {
+            separated = false;
+            while self.at_word() {
+                self.word();
+            }
+        }
+        separated |= self.end_of_header();
+        self.loop_body(opener, opened_at, separated);
+    }
+
+    /// `for ((init; cond; step)) do ... done`, or with a `{ … }` body.
     fn arithmetic_for(&mut self, opened_at: u32) {
         self.start(SyntaxKind::ArithForCommand);
         self.bump_as(SyntaxKind::For);
         self.take_double_parens();
         self.end_of_header();
-        if self.expect_keyword(SyntaxKind::Do, "for", opened_at) {
-            self.command_list_until(&[]);
-            self.expect_keyword(SyntaxKind::Done, "for", opened_at);
-        }
+        self.loop_body("for", opened_at, true);
         self.trailing_redirects();
         self.finish_node();
     }
 
-    /// The `;` and newlines between a loop's header and its `do`.
-    fn end_of_header(&mut self) {
+    /// `do … done`, or the `{ … }` bash also takes for a `for` or `select` body, as a group.
+    fn loop_body(&mut self, opener: &str, opened_at: u32, braces: bool) {
+        if braces && self.at_keyword(SyntaxKind::LBrace) {
+            self.start(SyntaxKind::Group);
+            self.bump_as(SyntaxKind::LBrace);
+            self.command_list_until(&[]);
+            self.expect_keyword(SyntaxKind::RBrace, opener, opened_at);
+            self.finish_node();
+            return;
+        }
+        if self.expect_keyword(SyntaxKind::Do, opener, opened_at) {
+            self.command_list_until(&[]);
+            self.expect_keyword(SyntaxKind::Done, opener, opened_at);
+        }
+    }
+
+    /// The `;` and newlines between a loop's header and its body, and whether there were any.
+    fn end_of_header(&mut self) -> bool {
+        let mut any = false;
         while self.at(SyntaxKind::Semi) || self.at(SyntaxKind::Newline) {
             self.bump();
+            any = true;
         }
+        any
     }
 
     fn group(&mut self) {
@@ -243,7 +269,10 @@ impl Parser<'_> {
         let mut closed_inner: Option<usize> = None;
         for (at, token) in self.tokens.iter().enumerate().skip(first) {
             match token.kind {
-                SyntaxKind::LParen => depth += 1,
+                kind if opens_paren(kind) => depth += 1,
+                // The lexer read it as arithmetic already, and this closes the `((`.
+                SyntaxKind::RParenRParen if depth == 2 => return true,
+                SyntaxKind::RParenRParen => depth -= 1,
                 SyntaxKind::RParen => {
                     depth -= 1;
                     match depth {
@@ -259,17 +288,30 @@ impl Parser<'_> {
     }
 
     /// Consume `((`, everything up to the matching `))`, and the `))`.
+    ///
+    /// The `))` is the one that closes the `((`, not the first one written: in
+    /// `((1 || (1 && 1)))` the first `))` closes the inner group and a `)` of the opener's.
     fn take_double_parens(&mut self) {
         let opened_at = self.position();
         if !self.eat(SyntaxKind::LParen) || !self.eat(SyntaxKind::LParen) {
             self.unclosed("((", opened_at, &[SyntaxKind::LParen]);
             return;
         }
-        while !self.at_end() {
-            if self.at(SyntaxKind::RParen) && self.next_is_adjacent(SyntaxKind::RParen) {
-                self.bump();
-                self.bump();
-                return;
+        let mut depth = 0u32;
+        while let Some(kind) = self.peek() {
+            match kind {
+                SyntaxKind::RParenRParen if depth == 0 => {
+                    self.bump();
+                    return;
+                }
+                SyntaxKind::RParen if depth == 0 && self.next_is_adjacent(SyntaxKind::RParen) => {
+                    self.bump();
+                    self.bump();
+                    return;
+                }
+                kind if opens_paren(kind) => depth += 1,
+                SyntaxKind::RParen | SyntaxKind::RParenRParen => depth = depth.saturating_sub(1),
+                _ => {}
             }
             self.bump();
         }

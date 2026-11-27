@@ -29,6 +29,11 @@ typed! {
     FunctionDef => FunctionDef
 }
 
+typed! {
+    /// `coproc [NAME] command`.
+    CoprocCommand => CoprocCommand
+}
+
 /// Every kind of command, as one thing to match on.
 #[derive(Debug, Clone, Copy)]
 pub enum Command<'a> {
@@ -43,6 +48,7 @@ pub enum Command<'a> {
     Arithmetic(ArithCommand<'a>),
     Conditional(CondCommand<'a>),
     Function(FunctionDef<'a>),
+    Coproc(CoprocCommand<'a>),
 }
 
 impl<'a> Command<'a> {
@@ -60,6 +66,7 @@ impl<'a> Command<'a> {
             SyntaxKind::ArithCommand => Self::Arithmetic(ArithCommand(node)),
             SyntaxKind::CondCommand => Self::Conditional(CondCommand(node)),
             SyntaxKind::FunctionDef => Self::Function(FunctionDef(node)),
+            SyntaxKind::CoprocCommand => Self::Coproc(CoprocCommand(node)),
             _ => return None,
         })
     }
@@ -76,6 +83,7 @@ impl<'a> Command<'a> {
             Self::Arithmetic(inner) => inner.syntax(),
             Self::Conditional(inner) => inner.syntax(),
             Self::Function(inner) => inner.syntax(),
+            Self::Coproc(inner) => inner.syntax(),
         }
     }
 
@@ -110,12 +118,17 @@ impl<'a> SimpleCommand<'a> {
 }
 
 impl<'a> Assignment<'a> {
-    /// The name on the left of the operator.
+    /// The name on the left of the operator, without any subscript.
     pub fn name(self, source: &Source) -> &str {
         self.0
             .tokens()
             .find(|token| token.kind() == SyntaxKind::Text)
             .map_or("", |token| token.text(source))
+    }
+
+    /// The `[…]` of `a[i]=x`, brackets included, when the assignment is to one element.
+    pub fn subscript(self) -> Option<&'a Node> {
+        self.0.node(SyntaxKind::Subscript)
     }
 
     /// `=` or `+=`.
@@ -152,6 +165,18 @@ impl<'a> Redirect<'a> {
             .flatten()
     }
 
+    /// The variable written in braces in front, as in `{fd}>file`, without its braces.
+    ///
+    /// The shell chooses the descriptor and stores it there, or for `{fd}>&-` reads it from there.
+    pub fn variable(self, source: &'a Source) -> Option<&'a str> {
+        let operator = self
+            .0
+            .tokens()
+            .find(|token| token.kind().is_redirect_operator())?;
+        let prefix = source.slice(Span::new(self.0.span().start, operator.span().start));
+        prefix.strip_prefix('{')?.strip_suffix('}')
+    }
+
     /// Which redirection it is.
     pub fn operator(self) -> Option<SyntaxKind> {
         self.0
@@ -181,6 +206,19 @@ impl<'a> FunctionDef<'a> {
 
     /// What the function runs, usually a group.
     pub fn body(self) -> Option<Command<'a>> {
+        self.0.nodes().find_map(Command::cast)
+    }
+}
+
+impl<'a> CoprocCommand<'a> {
+    /// The name the descriptors are published under, written only before a compound command.
+    /// Absent, bash uses `COPROC`.
+    pub fn name(self) -> Option<Word<'a>> {
+        self.0.nodes().find_map(Word::cast)
+    }
+
+    /// The one command that runs as the coprocess, with its own redirections.
+    pub fn command(self) -> Option<Command<'a>> {
         self.0.nodes().find_map(Command::cast)
     }
 }

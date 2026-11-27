@@ -147,9 +147,45 @@ impl<'a> ForCommand<'a> {
         self.0.nodes().filter_map(Word::cast).skip(skip)
     }
 
+    /// The list between `do` and `done`, or inside the `{ … }` written in their place.
     pub fn body(self) -> Option<CommandList<'a>> {
-        self.0.nodes().find_map(CommandList::cast)
+        self.0.nodes().find_map(CommandList::cast).or_else(|| {
+            let group = self.0.node(SyntaxKind::Group)?;
+            group.nodes().find_map(CommandList::cast)
+        })
     }
+
+    /// What is between the `((` and `))` of a `for ((init; cond; step))`, still as source text.
+    pub fn arithmetic(self, source: &Source) -> Option<&str> {
+        (self.0.kind() == SyntaxKind::ArithForCommand)
+            .then(|| double_paren_body(self.0).map(|span| source.slice(span)))
+            .flatten()
+    }
+}
+
+/// The span between a node's own `((` and the `))` that closes it.
+///
+/// Counted rather than searched for: in `for ((i = (1); i < 3; i += (1)))` the first `))` written
+/// closes a group inside the step.
+fn double_paren_body(node: &Node) -> Option<Span> {
+    let mut tokens = node.tokens().filter(|token| !token.kind().is_trivia());
+    tokens.find(|token| token.kind() == SyntaxKind::LParen)?;
+    let second = tokens
+        .next()
+        .filter(|token| token.kind() == SyntaxKind::LParen)?;
+    let start = second.span().end;
+    let mut depth = 0u32;
+    for token in tokens {
+        match token.kind() {
+            SyntaxKind::RParenRParen | SyntaxKind::RParen if depth == 0 => {
+                return Some(Span::new(start, token.span().start));
+            }
+            kind if crate::parse::opens_paren(kind) => depth += 1,
+            SyntaxKind::RParen | SyntaxKind::RParenRParen => depth -= 1,
+            _ => {}
+        }
+    }
+    None
 }
 
 impl<'a> CaseCommand<'a> {
@@ -214,9 +250,15 @@ impl ArithCommand<'_> {
     /// It stays text because it has to: POSIX expands parameters and command substitutions over it
     /// before any of it is arithmetic, so it cannot be evaluated — or usefully parsed — until it
     /// runs.
+    ///
+    /// Only what is inside the parentheses: `(( i++ )) 2>/dev/null` is `i++` with a redirection.
     pub fn expression(self, source: &Source) -> &str {
-        let text = source.slice(self.0.span());
-        let text = text.strip_prefix("((").unwrap_or(text);
-        text.strip_suffix("))").unwrap_or(text)
+        match double_paren_body(self.0) {
+            Some(span) => source.slice(span),
+            None => {
+                let text = source.slice(self.0.span());
+                text.strip_prefix("((").unwrap_or(text)
+            }
+        }
     }
 }

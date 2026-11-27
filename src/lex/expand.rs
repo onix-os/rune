@@ -41,7 +41,10 @@ impl Lexer<'_> {
         match self.cursor.peek() {
             Some('(') if self.cursor.peek_at(1) == Some('(') && self.arithmetic_ahead() => {
                 self.cursor.eat("((");
-                self.push_mode(Mode::Arithmetic { depth: 0 });
+                self.push_mode(Mode::Arithmetic {
+                    depth: 0,
+                    command: false,
+                });
                 SyntaxKind::DollarParenParen
             }
             Some('(') => {
@@ -100,7 +103,7 @@ impl Lexer<'_> {
     ///
     /// Input that never balances stays arithmetic, which is what it was before this and keeps an
     /// unfinished `$((1+2` reported as unfinished arithmetic rather than as an unclosed `$(`.
-    fn arithmetic_ahead(&self) -> bool {
+    pub(super) fn arithmetic_ahead(&self) -> bool {
         let rest = self.cursor.rest();
         let mut chars = rest.char_indices().skip(2);
         let mut depth = 2u32;
@@ -210,6 +213,9 @@ impl Lexer<'_> {
     /// A lone `)` here means the expansion was never finished properly; it is taken as the close
     /// anyway, and the parser is what says so.
     pub(super) fn close_arithmetic(&mut self) -> SyntaxKind {
+        // The word an expansion sits in goes on after it: `$((1))#x` is one word. After an
+        // `(( … ))` command a new word begins, and `#` there is a comment.
+        self.continues_word = !matches!(self.mode(), Mode::Arithmetic { command: true, .. });
         self.pop_mode();
         self.cursor.bump();
         if self.cursor.eat_char(')') {

@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.6] - 2026-11-27
+
+### <!-- 0 -->⛰️  Features
+
+- Read coproc and {fd} redirect prefixes
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Parse the forms bash accepts
+
 ## [0.1.5] - 2026-09-19
 
 ### <!-- 0 -->⛰️  Features

@@ -11,7 +11,7 @@ mod command;
 mod compound;
 mod word;
 
-pub use command::{Assignment, Command, FunctionDef, Redirect, SimpleCommand};
+pub use command::{Assignment, Command, CoprocCommand, FunctionDef, Redirect, SimpleCommand};
 pub use compound::{
     ArithCommand, CaseCommand, CaseItem, CondCommand, ElifClause, ForCommand, Group, IfCommand,
     LoopCommand, Subshell,
@@ -155,9 +155,14 @@ impl<'a> AndOrList<'a> {
 }
 
 impl<'a> Pipeline<'a> {
-    /// `! cmd` — the status is inverted.
+    /// `! cmd` — the status is inverted. Each `!` turns it round, so `! ! cmd` is not negated.
     pub fn is_negated(self) -> bool {
-        self.0.token(SyntaxKind::Bang).is_some()
+        self.0
+            .tokens()
+            .filter(|token| token.kind() == SyntaxKind::Bang)
+            .count()
+            % 2
+            == 1
     }
 
     /// `time cmd` — report how long the pipeline took.
