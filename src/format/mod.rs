@@ -274,6 +274,7 @@ impl<'a> Fmt<'a> {
             | K::CaseCommand
             | K::ElseClause => self.compound(node),
             K::FunctionDef => self.function_def(node),
+            K::CoprocCommand => self.coproc(node),
             K::Group => self.bracketed(node, K::LBrace, K::RBrace),
             K::Subshell => self.bracketed(node, K::LParen, K::RParen),
             // `[[ ]]`, `(( ))`, an arithmetic `for`, an error node: written as they were.

@@ -222,6 +222,10 @@ impl Parser<'_> {
             self.finish_node();
             return;
         }
+        if self.at_keyword(SyntaxKind::Coproc) {
+            self.coproc_command();
+            return;
+        }
         if self.compound_command() {
             return;
         }

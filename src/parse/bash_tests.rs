@@ -293,3 +293,98 @@ fn a_subscript_with_an_expansion_still_assigns() {
     let words = texts("echo a[ 1 ]=x", SyntaxKind::Word);
     assert_eq!(words, ["echo", "a[", "1", "]=x"]);
 }
+
+/// The coprocess in `text`: its name, if one was written, and the kind of its command.
+fn coprocess(text: &str) -> (Option<String>, SyntaxKind) {
+    let parsed = clean(text);
+    let mut nodes = Vec::new();
+    find(parsed.tree().root(), SyntaxKind::CoprocCommand, &mut nodes);
+    assert_eq!(nodes.len(), 1, "{text:?} holds one coprocess");
+    let coproc = crate::ast::CoprocCommand::cast(nodes[0]).expect("a coprocess");
+    let source = parsed.tree().source();
+    let name = coproc
+        .name()
+        .map(|word| source.slice(word.span()).to_string());
+    let command = coproc.command().expect("a command").syntax().kind();
+    (name, command)
+}
+
+#[test]
+fn a_coprocess_is_named_only_before_a_compound_command() {
+    for (text, name, command) in [
+        ("coproc cat file", None, SyntaxKind::SimpleCommand),
+        ("coproc NAME cat", None, SyntaxKind::SimpleCommand),
+        ("coproc { cat; }", None, SyntaxKind::Group),
+        ("coproc NAME { cat; }", Some("NAME"), SyntaxKind::Group),
+        ("coproc W (cat)", Some("W"), SyntaxKind::Subshell),
+        (
+            "coproc W while read l; do :; done",
+            Some("W"),
+            SyntaxKind::WhileCommand,
+        ),
+        ("coproc [[ -n x ]]", None, SyntaxKind::CondCommand),
+        ("coproc cat > out 2>&1", None, SyntaxKind::SimpleCommand),
+    ] {
+        assert_eq!(
+            coprocess(text),
+            (name.map(str::to_string), command),
+            "{text:?}"
+        );
+    }
+    // Redirections after a compound command are that command's.
+    let parsed = clean("coproc N { cat; } >log 2>&1");
+    let mut groups = Vec::new();
+    find(parsed.tree().root(), SyntaxKind::Group, &mut groups);
+    assert_eq!(
+        groups[0]
+            .nodes()
+            .filter(|n| n.kind() == SyntaxKind::Redirect)
+            .count(),
+        2
+    );
+    // In a pipeline, and not a keyword anywhere a command cannot start.
+    clean("coproc cat | wc -l");
+    assert!(texts("echo coproc x", SyntaxKind::CoprocCommand).is_empty());
+    assert!(!parse("coproc").is_clean());
+}
+
+#[test]
+fn a_coprocess_formats_as_it_reads() {
+    for text in [
+        "coproc cat file\n",
+        "coproc NAME { cat; }\n",
+        "coproc ( cat ) >log\n",
+    ] {
+        assert_eq!(crate::format(text).as_deref(), Ok(text), "{text:?}");
+    }
+}
+
+/// The variable of every redirection in `text`.
+fn variables(text: &str) -> Vec<String> {
+    let parsed = clean(text);
+    let mut nodes = Vec::new();
+    find(parsed.tree().root(), SyntaxKind::Redirect, &mut nodes);
+    nodes
+        .iter()
+        .filter_map(|node| crate::ast::Redirect::cast(node))
+        .filter_map(|redirect| redirect.variable(parsed.tree().source()))
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn a_descriptor_variable_belongs_to_its_redirection() {
+    assert_eq!(variables("exec {fd}>f"), ["fd"]);
+    assert_eq!(variables("{ echo; } {fd}>f"), ["fd"]);
+    assert_eq!(variables("while :; do :; done {fd}<f"), ["fd"]);
+    assert_eq!(variables("cat {a[1]}<f {b}>&-"), ["a[1]", "b"]);
+    assert_eq!(variables("{fd}>f"), ["fd"]);
+    // Not touching, or not a name: an ordinary word.
+    assert!(variables("echo {fd} >f").is_empty());
+    assert!(variables("echo {1}>f").is_empty());
+    assert!(texts("echo {fd} >f", SyntaxKind::Word).contains(&"{fd}".to_string()));
+    assert_eq!(
+        crate::format("{ echo; } {fd}>f\n").as_deref(),
+        Ok("{ echo; } {fd}>f\n")
+    );
+}

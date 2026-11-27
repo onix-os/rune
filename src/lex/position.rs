@@ -58,7 +58,16 @@ impl Lexer<'_> {
                 | SyntaxKind::Backtick
         ) || matches!(
             text,
-            "{" | "do" | "then" | "else" | "elif" | "!" | "if" | "while" | "until" | "time"
+            "{" | "do"
+                | "then"
+                | "else"
+                | "elif"
+                | "!"
+                | "if"
+                | "while"
+                | "until"
+                | "time"
+                | "coproc"
         )
     }
 

@@ -11,6 +11,7 @@ mod assign;
 mod command;
 mod compound;
 mod cond;
+mod coproc;
 mod redirect;
 mod word;
 

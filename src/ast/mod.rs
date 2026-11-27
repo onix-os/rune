@@ -11,7 +11,7 @@ mod command;
 mod compound;
 mod word;
 
-pub use command::{Assignment, Command, FunctionDef, Redirect, SimpleCommand};
+pub use command::{Assignment, Command, CoprocCommand, FunctionDef, Redirect, SimpleCommand};
 pub use compound::{
     ArithCommand, CaseCommand, CaseItem, CondCommand, ElifClause, ForCommand, Group, IfCommand,
     LoopCommand, Subshell,

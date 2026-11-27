@@ -3,29 +3,54 @@
 use super::Parser;
 use crate::tree::SyntaxKind;
 
+/// Whether `text` is `{name}` or `{name[subscript]}`: a variable a redirection keeps its
+/// descriptor in.
+fn is_fd_variable(text: &str) -> bool {
+    let Some(inner) = text
+        .strip_prefix('{')
+        .and_then(|rest| rest.strip_suffix('}'))
+    else {
+        return false;
+    };
+    let name = match inner.split_once('[') {
+        Some((name, subscript)) if subscript.ends_with(']') => name,
+        Some(_) => return false,
+        None => inner,
+    };
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
 impl Parser<'_> {
     pub(super) fn at_redirect(&self) -> bool {
-        self.peek().is_some_and(SyntaxKind::is_redirect_operator) || self.at_fd_prefix()
+        self.peek().is_some_and(SyntaxKind::is_redirect_operator) || self.fd_prefix().is_some()
     }
 
-    /// `2>&1` — digits touching a redirection operator name the descriptor being redirected.
+    /// How many tokens name the descriptor in front of a redirection operator, if any do.
+    ///
+    /// `2>&1` — digits touching the operator name the descriptor being redirected. `{fd}>file`
+    /// — a variable in braces touching it asks the shell to choose one and store it there, after a
+    /// compound command as much as in a simple one: `} {fd}>log`.
     ///
     /// They have to be touching. `echo 2 >file` writes the word `2` and redirects; `echo 2>file`
     /// redirects descriptor 2 and writes nothing.
-    fn at_fd_prefix(&self) -> bool {
-        let Some(index) = self.significant(0) else {
-            return false;
-        };
-        if self.tokens[index].kind != SyntaxKind::Text {
-            return false;
+    fn fd_prefix(&self) -> Option<usize> {
+        let first = self.significant(0)?;
+        let mut text = String::new();
+        for (count, token) in self.tokens[first..].iter().enumerate() {
+            if token.kind.is_redirect_operator() {
+                let digits = !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
+                return (digits || is_fd_variable(&text)).then_some(count);
+            }
+            if token.kind != SyntaxKind::Text || (count > 0 && !text.starts_with('{')) {
+                return None;
+            }
+            text.push_str(self.token_text(first + count));
         }
-        let text = self.token_text(index);
-        if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
-            return false;
-        }
-        self.tokens
-            .get(index + 1)
-            .is_some_and(|next| next.kind.is_redirect_operator())
+        None
     }
 
     /// The redirections written after a compound command, as in `while …; done > log`.
@@ -45,7 +70,7 @@ impl Parser<'_> {
 
     pub(super) fn redirect(&mut self) {
         self.start(SyntaxKind::Redirect);
-        if self.at_fd_prefix() {
+        for _ in 0..self.fd_prefix().unwrap_or(0) {
             self.bump();
         }
         self.bump();
@@ -55,5 +80,20 @@ impl Parser<'_> {
             self.error("this redirection does not say what to redirect to");
         }
         self.finish_node();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_fd_variable;
+
+    #[test]
+    fn a_descriptor_variable_is_a_name_in_braces() {
+        for text in ["{fd}", "{_x1}", "{fd[1]}", "{a[$i]}"] {
+            assert!(is_fd_variable(text), "{text}");
+        }
+        for text in ["{}", "{1}", "{a b}", "fd", "{fd", "{a[1}", "{a-b}"] {
+            assert!(!is_fd_variable(text), "{text}");
+        }
     }
 }
