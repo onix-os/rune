@@ -388,3 +388,19 @@ fn a_descriptor_variable_belongs_to_its_redirection() {
         Ok("{ echo; } {fd}>f\n")
     );
 }
+
+/// A subshell whose first command is an arithmetic command: `(((1/0)); echo x)`.
+///
+/// The outer `((` closes apart, so it is a `(` and then a `((` that does close together.
+#[test]
+fn a_subshell_can_open_with_an_arithmetic_command() {
+    for text in [
+        "(((1/0)); echo x)",
+        "(((x = 1)) && echo y)",
+        "( ((1)); echo x)",
+        "(((1)) )",
+    ] {
+        assert_eq!(texts(text, SyntaxKind::Subshell).len(), 1, "{text}");
+        assert_eq!(texts(text, SyntaxKind::ArithCommand).len(), 1, "{text}");
+    }
+}
