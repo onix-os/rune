@@ -404,3 +404,16 @@ fn a_subshell_can_open_with_an_arithmetic_command() {
         assert_eq!(texts(text, SyntaxKind::ArithCommand).len(), 1, "{text}");
     }
 }
+
+/// An array value the input ends inside is unfinished, so a reader takes the next line for it.
+#[test]
+fn an_open_array_value_is_unfinished() {
+    for text in ["a=(1 \\\n", "a=(1\n", "declare -A m=([x]=1 \\\n"] {
+        assert_eq!(
+            parse(text).completeness(),
+            crate::Completeness::Unfinished,
+            "{text:?}"
+        );
+    }
+    clean("a=(1 \\\n 2)\n");
+}
