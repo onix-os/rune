@@ -169,6 +169,7 @@ impl Parser<'_> {
     /// `(a b c)` on the right of an assignment.
     fn array_value(&mut self) {
         self.start(SyntaxKind::ArrayValue);
+        let opened_at = self.position();
         self.bump();
         loop {
             self.skip_newlines();
@@ -186,7 +187,15 @@ impl Parser<'_> {
             }
         }
         if !self.eat(SyntaxKind::RParen) {
-            self.error("this array value was never closed");
+            // Running out of input is unfinished rather than wrong: another line can close it.
+            let span = crate::span::Span::new(opened_at, opened_at + 1);
+            let mut error = crate::error::Error::new(span, "this array value was never closed")
+                .expecting([SyntaxKind::RParen])
+                .opened_at(span);
+            if self.at_end() {
+                error = error.unfinished();
+            }
+            self.push_error(error);
         }
         self.finish_node();
     }

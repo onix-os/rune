@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.7] - 2026-11-28
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Leave an open array value unfinished
+- Read an arithmetic command inside a subshell
+
 ## [0.1.6] - 2026-11-27
 
 ### <!-- 0 -->⛰️  Features

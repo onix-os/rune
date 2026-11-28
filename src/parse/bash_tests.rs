@@ -388,3 +388,32 @@ fn a_descriptor_variable_belongs_to_its_redirection() {
         Ok("{ echo; } {fd}>f\n")
     );
 }
+
+/// A subshell whose first command is an arithmetic command: `(((1/0)); echo x)`.
+///
+/// The outer `((` closes apart, so it is a `(` and then a `((` that does close together.
+#[test]
+fn a_subshell_can_open_with_an_arithmetic_command() {
+    for text in [
+        "(((1/0)); echo x)",
+        "(((x = 1)) && echo y)",
+        "( ((1)); echo x)",
+        "(((1)) )",
+    ] {
+        assert_eq!(texts(text, SyntaxKind::Subshell).len(), 1, "{text}");
+        assert_eq!(texts(text, SyntaxKind::ArithCommand).len(), 1, "{text}");
+    }
+}
+
+/// An array value the input ends inside is unfinished, so a reader takes the next line for it.
+#[test]
+fn an_open_array_value_is_unfinished() {
+    for text in ["a=(1 \\\n", "a=(1\n", "declare -A m=([x]=1 \\\n"] {
+        assert_eq!(
+            parse(text).completeness(),
+            crate::Completeness::Unfinished,
+            "{text:?}"
+        );
+    }
+    clean("a=(1 \\\n 2)\n");
+}

@@ -265,22 +265,36 @@ impl Parser<'_> {
         let Some(first) = self.significant(0) else {
             return false;
         };
-        let mut depth = 0i32;
+        // Every opener still open. A `))` closes one `$((`, or the two `(` of an arithmetic
+        // command nested inside: `(((1/0)); echo x)` is a subshell around one.
+        let mut open: Vec<SyntaxKind> = Vec::new();
         let mut closed_inner: Option<usize> = None;
         for (at, token) in self.tokens.iter().enumerate().skip(first) {
+            let before = open.len();
             match token.kind {
-                kind if opens_paren(kind) => depth += 1,
-                // The lexer read it as arithmetic already, and this closes the `((`.
-                SyntaxKind::RParenRParen if depth == 2 => return true,
-                SyntaxKind::RParenRParen => depth -= 1,
-                SyntaxKind::RParen => {
-                    depth -= 1;
-                    match depth {
-                        1 => closed_inner = Some(at),
-                        0 => return closed_inner.is_some_and(|inner| at == inner + 1),
-                        _ => {}
-                    }
+                kind if opens_paren(kind) => {
+                    open.push(kind);
+                    continue;
                 }
+                SyntaxKind::RParenRParen => {
+                    let closes = match open.last() {
+                        Some(SyntaxKind::LParen) => 2,
+                        _ => 1,
+                    };
+                    // The lexer read it as arithmetic already, and this closes the `((`.
+                    if before == 2 && closes == 2 {
+                        return true;
+                    }
+                    open.truncate(before.saturating_sub(closes));
+                }
+                SyntaxKind::RParen => {
+                    open.pop();
+                }
+                _ => continue,
+            }
+            match open.len() {
+                1 if before > 1 => closed_inner = Some(at),
+                0 => return closed_inner.is_some_and(|inner| at == inner + 1),
                 _ => {}
             }
         }
